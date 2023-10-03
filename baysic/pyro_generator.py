@@ -40,8 +40,8 @@ class SystemStructureModel(PyroModule):
         
         # mode 4.5/5, mean 5.5/5
         # around 1, matches empirical distribution well
-        # self.volume_ratio = PyroSample(dist.Gamma(5.5, 5))            
-        self.volume_ratio = PyroSample(dist.Gamma(18, 15))            
+        self.volume_ratio = PyroSample(dist.Gamma(5.5, 5))            
+        # self.volume_ratio = PyroSample(dist.Gamma(18, 15))            
         self.atom_volume = atomic_volume(comp)
 
         groups = self.lattice_model.get_groups()
@@ -49,6 +49,7 @@ class SystemStructureModel(PyroModule):
         self.wyckoff_options = []
         self.group_cards = []
         self.opt_cards = []
+        self.count_cards = []
         self.inds = []
 
         n_els = np.array(list(comp.values()))        
@@ -58,14 +59,18 @@ class SystemStructureModel(PyroModule):
                 self.group_options.extend([sg.number] * len(combs))
                 self.wyckoff_options.extend(combs)
                 self.group_cards.extend([1 / len(combs)] * len(combs))
-                self.opt_cards.extend([1] * len(combs))                                
+                self.opt_cards.extend([1] * len(combs)) 
+                self.count_cards.extend([len(sum(comb, [])) + 1 for comb in combs])
 
         self.group_cards = torch.tensor(self.group_cards).float()
         self.group_cards /= self.group_cards.sum().float()
         self.opt_cards = torch.tensor(self.opt_cards).float()
         self.opt_cards /= self.opt_cards.sum().float()
-
-        self.wyck_opt = PyroSample(dist.Categorical(probs=self.group_cards))      
+        self.count_cards = torch.tensor(self.count_cards).float()
+        self.count_cards = 0.2 ** (self.count_cards - min(self.count_cards))
+        self.count_cards /= self.count_cards.sum().float()
+        
+        self.wyck_opt = PyroSample(dist.Categorical(probs=self.count_cards))      
                 
         
     def forward(self):
@@ -75,14 +80,14 @@ class SystemStructureModel(PyroModule):
         opt = self.wyck_opt        
         self.sg = self.group_options[opt]
         comb = self.wyckoff_options[opt]
-        
+                
         self.coords = torch.tensor([])
         self.elems = []
         self.wsets = []        
         spots = sum(comb, [])
         elements = sum([[elem] * len(spots) for elem, spots in zip(self.comp.elements, comb)], [])
-        wsets = [WyckoffSet(sg, spot) for spot in spots]
-        dofs = np.array([wset.dof for wset in wsets])
+        wsets: list[WyckoffSet] = [WyckoffSet(self.sg, spot) for spot in spots]
+        dofs: list[int] = np.array([wset.dof for wset in wsets])
         # WPs with 0 degrees of freedom should go first, because they're very cheap to expand out
         # then, letting the high-multiplicity elements go first is best
         # they're the toughest to place, and thus make the best use of parallelism
@@ -162,7 +167,7 @@ class SystemStructureModel(PyroModule):
                 old = self.coords[all_old[adds]]
                 new = good_all_coords[all_new[adds]]
                 debug_shapes('old', 'new')
-                self.coords = torch.cat([old, new], dim=1)
+                self.coords = torch.cat([old, new], dim=1)                
                 # self.coords.append(set_coords[torch.where(set_valid)[0][0]].unsqueeze(0))
 
             else:
@@ -177,6 +182,21 @@ class SystemStructureModel(PyroModule):
     def to_structures(self) -> list[Structure]:
         np_coords = self.coords.detach().cpu().numpy()
         return [Structure(self.lattice, self.elems, coords) for coords in np_coords]
+    
+    def to_gen_coords(self) -> torch.Tensor:
+        """Gets just the free coordinates."""
+        curr_i = 0
+        coords = []
+        for wset in self.wsets:
+            if wset.dof == 0:
+                # no general coordinates to add
+                curr_i += wset.multiplicity
+                continue
+            else:
+                coords.append(wset.inverse(self.coords[..., curr_i, :]))
+                curr_i += wset.multiplicity
+        return torch.cat(coords, dim=-1)
+
 
     
 
@@ -184,7 +204,8 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, force=True)
     torch.manual_seed(34761)
     mod = SystemStructureModel(
-        Composition.from_dict({'K': 8, 'Li': 4, 'Cr': 4, 'F': 24}),
+        Composition({'Mg': 8, 'Al': 16, 'O': 32}),
+        # Composition.from_dict({'K': 8, 'Li': 4, 'Cr': 4, 'F': 24}),        
         # Composition.from_dict({'Sr': 3, 'Ti': 1, 'O': 1}),
         CubicLattice
     )

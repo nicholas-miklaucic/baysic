@@ -71,9 +71,9 @@ relaxer = Relaxer(potential=pot)
 
 def point_energy(struct: Structure) -> float:
     if not is_structure_valid(struct):
-        return 100 + eform.predict_structure(struct) 
+        return 100 + eform.predict_structure(struct).item()
     else: 
-        return eform.predict_structure(struct)
+        return eform.predict_structure(struct).item()
 
 def relaxed_energy(struct: Structure, long: bool = False) -> (Structure, float):
     if long:
@@ -93,4 +93,4 @@ def e_form(struct: Structure) -> float:
     if not is_structure_valid(struct):
         return 100
     else:
-        return relaxed_energy(struct)[1] / struct.composition.num_atoms
+        return relaxed_energy(struct)[1]

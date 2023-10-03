@@ -20,7 +20,7 @@ import pandas as pd
 
 from baysic.utils import df_to_json
 
-torch.manual_seed(29432)
+torch.manual_seed(29433)
 
 smoke_test = False
 
@@ -30,7 +30,7 @@ overwrite = False
 if smoke_test:
     num_generations = 1
 else:
-    num_generations = 100
+    num_generations = 200
     
 failure_factor = 100
 
@@ -50,13 +50,13 @@ run_dir.mkdir(exist_ok=True)
 
 df = pd.read_pickle('merged_test_data3.pkl')
 
-test_df = df.query('CrystalSystem == "Cubic"').sort_values('nsites').iloc[-10:]
+test_df = df.query('CrystalSystem == "Cubic"').sort_values('nsites')[::2]
 
 if smoke_test:
     test_df = test_df.iloc[:2]
 
 task_rows = []
-for i, row in tqdm(test_df.iterrows(), total=test_df.shape[0], color='#1d71df', desc='Molecules'):
+for i, row in tqdm(test_df.iterrows(), total=test_df.shape[0], colour='#1d71df', desc='Molecules'):
     struct = row['struct']    
 
     sga = SpacegroupAnalyzer(struct)
@@ -81,11 +81,11 @@ for i, row in tqdm(test_df.iterrows(), total=test_df.shape[0], color='#1d71df', 
             except ValueError:
                 continue
             
-            new_structs = model.to_structures()[:20]            
+            new_structs = model.to_structures()[:10]
             e_form_vals = []
             good_structs = []            
             for struct in new_structs:
-                e_form_val = point_energy(deepcopy(struct)).item()
+                e_form_val = point_energy(deepcopy(struct))
                 if e_form_val < 80:
                     bar.update()
                     e_form_vals.append(e_form_val)
@@ -127,7 +127,7 @@ for i, row in tqdm(test_df.iterrows(), total=test_df.shape[0], color='#1d71df', 
     symm_data = sga.get_symmetry_dataset()
     scale = conv.num_sites / symm.num_sites
     best_struct = structs[np.argmin(e_forms)]    
-    best_relaxed, best_gen_e_form = relaxed_energy(deepcopy(best_relaxed), long=True)
+    best_relaxed, best_gen_e_form = relaxed_energy(deepcopy(best_struct), long=True)
     task_rows.append({
         'sg_symbol': symm_data['international'],
         'symm': symm,
@@ -139,7 +139,7 @@ for i, row in tqdm(test_df.iterrows(), total=test_df.shape[0], color='#1d71df', 
         'prop_actual_success': 1 - (fail_2 / len(structs)),
         'best_struct': best_struct,
         'best_relaxed': best_relaxed,
-        'best_gen_e_form': best_gen_e_form / scale,
+        'best_gen_e_form': best_gen_e_form,
         'best_group': groups[np.argmin(e_forms)],
         'true_e_form': e_form(deepcopy(row['struct']))
     })

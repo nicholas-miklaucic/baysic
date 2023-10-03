@@ -17,7 +17,7 @@ from baysic.utils import get_group, get_wp
 from cctbx.sgtbx.direct_space_asu.reference_table import get_asu
 from scipy.spatial import ConvexHull
 import networkx as nx
-
+from torch.distributions import AffineTransform
 
 class WyckoffSet(torch.nn.Module):
     """A stochastic representation of a Wyckoff set."""
@@ -52,9 +52,9 @@ class WyckoffSet(torch.nn.Module):
         xyverts = verts[:, [0, 1]]
         xyhull = ConvexHull(xyverts)
 
-        self.x_trans = torch.distributions.AffineTransform(
-            loc=xyverts[:, 0].min(),
-            scale=xyverts[:, 0].ptp()
+        self.x_trans = AffineTransform(
+            loc=torch.tensor(xyverts[:, 0].min()),
+            scale=torch.tensor(xyverts[:, 0].ptp())
         )
         
 
@@ -135,6 +135,35 @@ class WyckoffSet(torch.nn.Module):
         )  # to ..., mult, 1, 4
         return out[..., 0, :3]
     
+    @staticmethod
+    def _inv_transform(transform: AffineTransform) -> AffineTransform:
+        """Inverts the transform, handling the case of near-zero scale by returning a scale of one."""
+        inv_scale = torch.where(torch.abs(transform.scale) <= 1e-6, 1, 1 / transform.scale)        
+        return AffineTransform(-transform.loc * inv_scale, inv_scale)
+
+    
+    def inverse(self, xyz: torch.Tensor) -> torch.Tensor:
+        """Inverts the transformation.
+        xyz: [..., 3]
+
+        Output: [..., dof]
+        """
+        x = xyz[..., [0]]
+        x_u = self._inv_transform(self.x_trans)(x)
+        ylo, yhi = self.ymin(x).float(), self.ymax(x).float()
+        y_trans = AffineTransform(ylo, yhi - ylo)
+        y = xyz[..., [1]]
+        y_u = self._inv_transform(y_trans)(y)
+
+        zlo, zhi = self._get_z_bounds(x, y)
+        z_trans = AffineTransform(zlo, zhi - zlo)
+        z = xyz[..., [2]]
+        z_u = self._inv_transform(z_trans)(z)
+
+        free_axes = [i for i in range(3) if i not in self.wp.get_frozen_axis()]
+        return torch.cat([x_u, y_u, z_u], dim=-1)[..., free_axes]
+        
+    
     def to_asu(self, xyz: torch.Tensor) -> torch.Tensor:
         """Converts to the transformed space.
         
@@ -171,7 +200,7 @@ class WyckoffSet(torch.nn.Module):
 
             # x_u = (x - self.xmin) / (self.xmax - self.xmin)
             ylo, yhi = self.ymin(x).float(), self.ymax(x).float()
-            y_trans = torch.distributions.AffineTransform(ylo, yhi - ylo)
+            y_trans = AffineTransform(ylo, yhi - ylo)
 
             if 1 not in self.wp.get_frozen_axis():
                 # y is free parameter, we know it
@@ -185,7 +214,7 @@ class WyckoffSet(torch.nn.Module):
 
             
             zlo, zhi = self._get_z_bounds(x, y)
-            z_trans = torch.distributions.AffineTransform(zlo, zhi - zlo)
+            z_trans = AffineTransform(zlo, zhi - zlo)
 
             if 2 not in self.wp.get_frozen_axis():
                 # z is free parameter
@@ -203,7 +232,29 @@ class WyckoffSet(torch.nn.Module):
 
 if __name__ == '__main__':
     test_asu = False
-    test_all_pos = True
+    test_all_pos = False
+    test_inv = True
+
+    if test_inv:
+        for group in range(1, 231):
+            wps = Group(group).Wyckoff_positions
+            for wp in wps[:2] + wps[-2:]:
+                ws = WyckoffSet(group, wp.index)
+                xyz = torch.cartesian_prod(
+                    torch.linspace(0.01, 0.99, 5), 
+                    torch.linspace(0.01, 0.99, 5), 
+                    torch.linspace(0.01, 0.99, 5)
+                ).reshape(125, 3)[:, :wp.get_dof()]
+
+                if xyz.numel() == 0:
+                    continue
+                
+                posns = ws.to_asu(xyz)
+                for i in range(len(posns)):
+                    if not torch.allclose(ws.to_asu(ws.inverse(posns[[i]])), posns[i]):
+                        raise ValueError('Whoops')
+                all_posns = ws.to_all_positions(posns)
+        print('Inverses successful!')
 
     if test_all_pos:
         for group in range(1, 231):            
