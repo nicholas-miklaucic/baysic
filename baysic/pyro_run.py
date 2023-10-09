@@ -1,10 +1,7 @@
 """Generating lots of crystals using Pyro."""
 
-from bdb import effective
 from copy import deepcopy
-import json
-import pickle
-from click import Group
+from networkx import chain_decomposition
 import numpy as np
 
 import torch
@@ -16,6 +13,7 @@ import pandas as pd
 from tqdm import tqdm
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from baysic.structure_evaluation import e_form, point_energy, relaxed_energy
+from pymatgen.core import Composition
 import pandas as pd
 
 from baysic.utils import df_to_json

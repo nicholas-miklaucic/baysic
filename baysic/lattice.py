@@ -1,5 +1,4 @@
 import functools
-from turtle import forward
 from numpy import stack
 import torch
 import torch.nn as nn
@@ -93,8 +92,7 @@ class TriclinicLattice(LatticeModel):
         # see orthorhombic lattice for strategy
         self.abc_lat = OrthorhombicLattice(volume)
         
-    def forward(self) -> torch.Tensor:
-        vol = torch.tensor(self.volume)
+    def forward(self) -> torch.Tensor:        
         aby = torch.tensor([self.alpha, self.beta, self.gamma]).deg2rad()
         c_a, c_b, c_y = aby.cos()
         s_a, s_b, s_y = aby.sin()
@@ -140,11 +138,63 @@ class OrthorhombicLattice(LatticeModel):
         abc *= self.volume ** (1/3)
         return torch.diag(abc)
     
+class MonoclinicLattice(LatticeModel):
+    """Monoclinic lattice of dimensions a x b x c with non right-angle
+    beta between lattice vectors a and c."""
+    lattice_type = 'monoclinic'
+    def __init__(self, volume: float):
+        super().__init__(volume)
 
+        self.beta = PyroSample(dist.Gamma(63, 0.7))
+        # see orthorhombic lattice for strategy
+        self.abc_lat = OrthorhombicLattice(volume)
+        
+    def forward(self) -> torch.Tensor:        
+        beta = torch.deg2rad(self.beta)
+        c_b = torch.cos(beta)        
+        s_b = torch.sin(beta)
+        scale_factor = s_b
 
+        self.abc = torch.diag(self.abc_lat.forward())
+        self.abc /= scale_factor ** (1/3)
+        a, b, c = self.abc                
+        
+        return torch.tensor([
+            [a,       0., 0.],
+            [0.,      b,  0.],
+            [c * c_b, 0., c * s_b]])
+    
+
+class HexagonalLattice(LatticeModel):
+    """Hexagonal lattice."""
+    lattice_type = 'hexagonal'
+    def __init__(self, volume: float):
+        super().__init__(volume)
+
+        # most hexagonal lattices aren't super weirdly shaped
+        # we want to generate a, b, c such that abc = volume
+        # generate c tightly around 1
+        # a = sqrt(1 / c)
+        # then scale by volume ^ (1/3) and sqrt(3)/2 factor
+        self.c = PyroSample(dist.Gamma(4, 3))
+        
+    def forward(self) -> torch.Tensor:        
+        c = self.c
+        a = torch.sqrt(1 / c)
+        ac = torch.tensor([a, c])
+        scale_factor = torch.sqrt(torch.tensor([3.])) / 2.
+        ac *= (self.volume / scale_factor) ** (1/3)
+        a_scaled, c_scaled = ac
+        return torch.tensor([
+            [a_scaled / 2, -scale_factor * a_scaled, 0.],
+            [a_scaled / 2, +scale_factor * a_scaled, 0.],
+            [0.,           0.,                       c_scaled] 
+        ])
+
+LATTICES: list[LatticeModel] = [CubicLattice, TetragonalLattice, OrthorhombicLattice, TriclinicLattice, MonoclinicLattice, HexagonalLattice]
 
 if __name__ == '__main__':
-    for lat in [CubicLattice, TetragonalLattice, OrthorhombicLattice, TriclinicLattice]:
+    for lat in LATTICES:
         print(lat.lattice_type)        
         vol = atomic_volume(Composition({'O': 3, 'Sr': 1, 'Ti': 1})) * 1.3
         mod = lat(vol)

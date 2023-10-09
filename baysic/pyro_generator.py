@@ -33,7 +33,7 @@ nbeam = 1000
 
 class SystemStructureModel(PyroModule):
     """A stochastic structure generator working within a particular lattice type."""    
-    def __init__(self, comp: Composition, lattice: LatticeModel):
+    def __init__(self, comp: Composition, lattice: LatticeModel, force_group=None):
         super().__init__()
         self.comp = comp
         self.lattice_model = lattice
@@ -45,6 +45,11 @@ class SystemStructureModel(PyroModule):
         self.atom_volume = atomic_volume(comp)
 
         groups = self.lattice_model.get_groups()
+        if force_group is not None:
+            if force_group >= len(groups):
+                raise ValueError(f'{force_group} is not valid index for group list of length {len(groups)}. force_group has to be an index, not a group number.')
+            groups = [groups[force_group]]
+            
         self.group_options = []
         self.wyckoff_options = []
         self.group_cards = []
@@ -61,6 +66,9 @@ class SystemStructureModel(PyroModule):
                 self.group_cards.extend([1 / len(combs)] * len(combs))
                 self.opt_cards.extend([1] * len(combs)) 
                 self.count_cards.extend([len(sum(comb, [])) + 1 for comb in combs])
+
+        if len(self.wyckoff_options) == 0:
+            raise ValueError('No possible Wyckoff assignments')
 
         self.group_cards = torch.tensor(self.group_cards).float()
         self.group_cards /= self.group_cards.sum().float()

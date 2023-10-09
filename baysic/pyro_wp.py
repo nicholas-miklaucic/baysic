@@ -1,5 +1,6 @@
 """Pyro model for a specific Wyckoff position."""
 
+from distutils.ccompiler import get_default_compiler
 from math import floor
 from turtle import forward
 import numpy as np
@@ -190,7 +191,7 @@ class WyckoffSet(torch.nn.Module):
                 # sometimes the first position isn't the one in the ASU
                 # so search for one of those
                 x = gen_tau[0]
-                if (0 <= self.x_trans.inv(x) <= 1):                    
+                if (0 <= torch.round(self.x_trans.inv(x), decimals=2) <= 1): 
                     x = torch.ones_like(xyz[..., :1]) * x
                     if xyz.numel() == 0:
                         x = torch.tensor([[gen_tau[0]]])
@@ -234,24 +235,39 @@ if __name__ == '__main__':
     test_asu = False
     test_all_pos = False
     test_inv = True
+    test_screw = False
+
+    if test_screw:        
+        ws = WyckoffSet(143, 'c')
+        zz = torch.cartesian_prod(
+            torch.linspace(0.01, 0.99, 10),
+        ).reshape(10, 1)
+
+        posns = ws.to_asu(zz)
+        for i in range(len(posns)):
+            if not torch.allclose(ws.to_asu(ws.inverse(posns[[i]])), posns[i]):
+                raise ValueError('Whoops')
+        all_posns = ws.to_all_positions(posns)
+
 
     if test_inv:
         for group in range(1, 231):
             wps = Group(group).Wyckoff_positions
             for wp in wps[:2] + wps[-2:]:
                 ws = WyckoffSet(group, wp.index)
-                xyz = torch.cartesian_prod(
-                    torch.linspace(0.01, 0.99, 5), 
-                    torch.linspace(0.01, 0.99, 5), 
-                    torch.linspace(0.01, 0.99, 5)
-                ).reshape(125, 3)[:, :wp.get_dof()]
+                if wp.get_dof() == 0:
+                    continue 
 
-                if xyz.numel() == 0:
-                    continue
-                
+                xyz = torch.cartesian_prod(*[
+                    torch.linspace(0.01, 0.99, 5)
+                    for _ in range(wp.get_dof())
+                ]).reshape(5 ** wp.get_dof(), wp.get_dof())
+            
                 posns = ws.to_asu(xyz)
                 for i in range(len(posns)):
-                    if not torch.allclose(ws.to_asu(ws.inverse(posns[[i]])), posns[i]):
+                    if not torch.max(torch.abs(ws.to_asu(ws.inverse(posns[[i]])) - posns[i])) < 1e-3:
+                        print(wp)
+                        print(group)
                         raise ValueError('Whoops')
                 all_posns = ws.to_all_positions(posns)
         print('Inverses successful!')
