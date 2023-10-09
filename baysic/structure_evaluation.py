@@ -11,8 +11,11 @@ from pymatgen.core import Lattice, Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 from pymatgen.analysis.molecule_structure_comparator import CovalentRadius
 
-import matgl
-from matgl.ext.ase import M3GNetCalculator, MolecularDynamics, Relaxer
+# from matgl import matgl
+# from matgl.matgl.ext.ase import M3GNetCalculator, MolecularDynamics, Relaxer
+from chgnet.model import StructOptimizer
+from chgnet.model.model import CHGNet
+import torch
 
 from baysic.utils import upper_tri
 
@@ -65,19 +68,23 @@ def is_structure_valid(struct: Structure) -> bool:
         
     return True
 
-eform = matgl.load_model('M3GNet-MP-2018.6.1-Eform')
-pot = matgl.load_model("M3GNet-MP-2021.2.8-PES")
-relaxer = Relaxer(potential=pot)
+# eform = matgl.load_model('matgl/pretrained_models/M3GNet-MP-2018.6.1-Eform/model.json')
+# pot = matgl.load_model("matgl/pretrained_models/M3GNet-MP-2021.2.8-PES/model.json")
+# relaxer = Relaxer(potential=pot)
+
+chgnet = CHGNet.load()
+relaxer = StructOptimizer()
 
 def point_energy(struct: Structure) -> float:
-    if not is_structure_valid(struct):
-        return 100 + eform.predict_structure(struct).item()
+    prediction = chgnet.predict_structure(struct, task='e')
+    if not is_structure_valid(struct):        
+        return 100 + prediction['e'].item()
     else: 
-        return eform.predict_structure(struct).item()
+        return prediction['e'].item()
 
 def relaxed_energy(struct: Structure, long: bool = False) -> (Structure, float):
     if long:
-        params = dict(fmax=0.01, steps=300)    
+        params = dict(fmax=0.01, steps=150)    
     else:
         params = dict(fmax=0.02, steps=5)
         
@@ -94,3 +101,15 @@ def e_form(struct: Structure) -> float:
         return 100
     else:
         return relaxed_energy(struct)[1]
+    
+
+if __name__ == '__main__':
+    import pandas as pd
+    from tqdm import tqdm
+    import torch
+    df = pd.read_pickle('merged_test_data3.pkl')
+    energies = []
+
+    with torch.device('cpu'):
+        for i in tqdm(df.index[:20]):
+            energies.append(point_energy(df.loc[i, 'struct']))

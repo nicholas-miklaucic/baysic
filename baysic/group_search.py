@@ -1,6 +1,7 @@
 """Methodically search for candidate structures for a single composition."""
 
 from copy import deepcopy
+import logging
 import numpy as np
 
 import torch
@@ -17,13 +18,18 @@ import pandas as pd
 
 from baysic.utils import df_to_json
 
-torch.manual_seed(29433)
+torch.manual_seed(29437)
 
-comp = Composition("CeBRh3")
+comp = Composition("K4C2N4")
 # https://next-gen.materialsproject.org/materials/mp-510376
+# https://next-gen.materialsproject.org/materials/mp-11251
+# https://next-gen.materialsproject.org/materials/mp-2554
+# https://next-gen.materialsproject.org/materials/mp-10408
+
 
 smoke_test = False
-overwrite = True
+mode = 'append'
+
 
 log_dir = Path('logs/')
 
@@ -34,16 +40,16 @@ else:
     num_generations = 50
     max_gens_at_once = 10
     
-failure_factor = 100
+failure_factor = 5
 
 date = datetime.now().strftime('%m-%d')
 date_dir = log_dir / date
 date_dir = date_dir / Path(comp.formula.replace(' ', ''))
 if not date_dir.exists():
-    date_dir.mkdir()
+    date_dir.mkdir(parents=True)
 
 run_num = 1
-while (date_dir / str(run_num)).exists() and not overwrite:
+while (date_dir / str(run_num)).exists() and mode == 'new':
     run_num += 1
     if run_num >= 100:
         raise ValueError('You sure you want to make 100 folders for a day?')
@@ -59,6 +65,9 @@ for lattice_type in LATTICES:
         groups = [groups[0]]
 
     for i in trange(0, len(groups), colour='#1d71df', desc=lattice_type.lattice_type):
+        if mode == 'append' and (run_dir / Path(f'{groups[i].number}.json')).exists():
+            print(f'{groups[i].number} already done, continue')
+            continue
         try:
             model = SystemStructureModel(comp, lattice_type, i)
         except ValueError as e:
@@ -74,13 +83,18 @@ for lattice_type in LATTICES:
         success_tries = 0
         fail_2 = 0
         tries = 0
-        with tqdm(total=num_generations, colour='#df1d71') as bar:
+        with tqdm(total=num_generations, colour='#df1d71', desc=f'{groups[i].symbol} ({groups[i].number})') as bar:
             while len(structs) < num_generations and tries < failure_factor * num_generations:
                 tries += 1
                 try:
                     coords, lattice, elems, wsets, sg = model()
                 except ValueError:
                     continue
+                except AttributeError as e:
+                    logging.error(f'AttributeError for {groups[i].number} ({groups[i].symbol})')
+                    logging.error(e)
+                    continue
+
                 
                 new_structs = model.to_structures()[:max_gens_at_once]
                 e_form_vals = []
@@ -124,7 +138,7 @@ for lattice_type in LATTICES:
         df_to_json(run_df, run_dir / Path(f'{groups[i].number}.json'))
         
         best_struct = structs[np.argmin(e_forms)]    
-        best_relaxed, best_gen_e_form = relaxed_energy(deepcopy(best_struct), long=True)
+        # best_relaxed, best_gen_e_form = relaxed_energy(deepcopy(best_struct), long=True)
         group_rows.append({
             'lattice_type': lattice_type.lattice_type,
             'sg_symbol': groups[i].symbol,
@@ -133,8 +147,8 @@ for lattice_type in LATTICES:
             'avg_num_successful': len(structs) / tries,
             'prop_actual_success': len(structs) / (fail_2 + len(structs)),
             'best_struct': best_struct,
-            'best_relaxed': best_relaxed,
-            'best_gen_e_form': best_gen_e_form,
+            # 'best_relaxed': best_relaxed,
+            # 'best_gen_e_form': best_gen_e_form,
         })
     
 group_df = pd.DataFrame(group_rows)

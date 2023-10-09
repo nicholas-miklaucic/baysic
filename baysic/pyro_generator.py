@@ -29,7 +29,7 @@ import networkx as nx
 
 
 ngrid = 12
-nbeam = 1000
+nbeam = 300
 
 class SystemStructureModel(PyroModule):
     """A stochastic structure generator working within a particular lattice type."""    
