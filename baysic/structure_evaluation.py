@@ -72,10 +72,14 @@ def is_structure_valid(struct: Structure) -> bool:
 # pot = matgl.load_model("matgl/pretrained_models/M3GNet-MP-2021.2.8-PES/model.json")
 # relaxer = Relaxer(potential=pot)
 
-chgnet = CHGNet.load()
-relaxer = StructOptimizer()
+chgnet = None
+relaxer = None
 
 def point_energy(struct: Structure) -> float:
+    global chgnet
+    if chgnet is None:
+        chgnet = CHGNet.load()
+    
     prediction = chgnet.predict_structure(struct, task='e')
     if not is_structure_valid(struct):        
         return 100 + prediction['e'].item()
@@ -83,6 +87,9 @@ def point_energy(struct: Structure) -> float:
         return prediction['e'].item()
 
 def relaxed_energy(struct: Structure, long: bool = False) -> (Structure, float):
+    global relaxer
+    if relaxer is None:
+        relaxer = StructOptimizer()
     if long:
         params = dict(fmax=0.01, steps=150)    
     else:

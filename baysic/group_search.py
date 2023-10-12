@@ -1,10 +1,19 @@
 """Methodically search for candidate structures for a single composition."""
 
+import warnings
+
+warnings.filterwarnings('ignore', module='*mprester*')
+
 from copy import deepcopy
+from dataclasses import dataclass
+from turtle import update
+from flask import cli
+from pyrallis import field
 import logging
 import numpy as np
 
 import torch
+from baysic.config import FileLoggingMode, MainConfig
 from baysic.lattice import LATTICES, CubicLattice
 from baysic.pyro_generator import SystemStructureModel
 from pathlib import Path
@@ -13,149 +22,132 @@ import pandas as pd
 from tqdm import tqdm, trange
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from baysic.structure_evaluation import e_form, point_energy, relaxed_energy
-from pymatgen.core import Composition
+from pymatgen.core import Composition, Structure, Lattice
 import pandas as pd
+import pyrallis
 
 from baysic.utils import df_to_json
+from rich.logging import RichHandler
+from rich.progress import Progress
 
-torch.manual_seed(29437)
-
-comp = Composition("K4C2N4")
+# comp = Composition("K4C2N4")
 # https://next-gen.materialsproject.org/materials/mp-510376
 # https://next-gen.materialsproject.org/materials/mp-11251
 # https://next-gen.materialsproject.org/materials/mp-2554
 # https://next-gen.materialsproject.org/materials/mp-10408
 
+@pyrallis.wrap('config.toml')
+def main(conf: MainConfig):
+    """Runs a search to generate structures for a specific composition."""
 
-smoke_test = False
-mode = 'append'
+    if conf.search.rng_seed is not None:
+        torch.manual_seed(conf.search.rng_seed)
 
+    FORMAT = "%(message)s"
+    logging.basicConfig(
+        level=conf.cli.verbosity.value, format=FORMAT, datefmt="[%X]", handlers=[RichHandler()]
+    )
 
-log_dir = Path('logs/')
+    if conf.log.use_directory:
+        date = datetime.now().strftime('%m-%d')
+        date_dir = conf.log.log_directory / date
+        date_dir = date_dir / Path(conf.target.formula)
+        if not date_dir.exists():
+            date_dir.mkdir(parents=True)
 
-if smoke_test:
-    num_generations = 1
-    max_gens_at_once = 1
-else:
-    num_generations = 50
-    max_gens_at_once = 10
+        run_num = 1
+        while (date_dir / str(run_num)).exists() and conf.log.log_dir_mode == FileLoggingMode.new:
+            run_num += 1
+            if run_num >= 100:
+                raise ValueError('You sure you want to make 100 folders for a day?')
+            
+        run_dir = date_dir / str(run_num)
+        run_dir.mkdir(exist_ok=True)
     
-failure_factor = 5
+    big_df = []
+    with Progress(disable=not conf.cli.show_progress, speed_estimate_period=1) as progress:        
+        for lattice_type in LATTICES:
+            groups = lattice_type.get_groups()
+            if conf.search.smoke_test:
+                # just do two iterations per lattice type, quick smoke test
+                groups = groups[:2]
 
-date = datetime.now().strftime('%m-%d')
-date_dir = log_dir / date
-date_dir = date_dir / Path(comp.formula.replace(' ', ''))
-if not date_dir.exists():
-    date_dir.mkdir(parents=True)
-
-run_num = 1
-while (date_dir / str(run_num)).exists() and mode == 'new':
-    run_num += 1
-    if run_num >= 100:
-        raise ValueError('You sure you want to make 100 folders for a day?')
-    
-run_dir = date_dir / str(run_num)
-run_dir.mkdir(exist_ok=True)
-
-group_rows = []
-
-for lattice_type in LATTICES:
-    groups = lattice_type.get_groups()
-    if smoke_test:
-        groups = [groups[0]]
-
-    for i in trange(0, len(groups), colour='#1d71df', desc=lattice_type.lattice_type):
-        if mode == 'append' and (run_dir / Path(f'{groups[i].number}.json')).exists():
-            print(f'{groups[i].number} already done, continue')
-            continue
-        try:
-            model = SystemStructureModel(comp, lattice_type, i)
-        except ValueError as e:
-            print(f'No valid Wyckoff assignments for {groups[i].number} ({groups[i].symbol})')
-            continue
-
-        structs = []
-        wsyms = []
-        lat_matrix = []
-        lat_vol = []
-        e_forms = []    
-        pre_generated = 0
-        success_tries = 0
-        fail_2 = 0
-        tries = 0
-        with tqdm(total=num_generations, colour='#df1d71', desc=f'{groups[i].symbol} ({groups[i].number})') as bar:
-            while len(structs) < num_generations and tries < failure_factor * num_generations:
-                tries += 1
+            lattice_task = progress.add_task(lattice_type.lattice_type.title(), total=len(groups))
+            for group in groups:
+                str_group = f'[sky_blue3] [bold] {group.number} [/bold] [italic] ({group.symbol}) [/italic] [/sky_blue3]'
+                extra = {'markup': True}
+                log_dir = run_dir / Path(f'{group.number}.json')
+                if conf.log.log_dir_mode == FileLoggingMode.append and log_dir.exists():
+                    logging.info(f'{str_group} already done, continue', extra=extra)
+                    progress.update(lattice_task, advance=1)
+                    continue
                 try:
-                    coords, lattice, elems, wsets, sg = model()
-                except ValueError:
+                    model = SystemStructureModel(conf.log, conf.search, conf.target.composition, lattice_type, group)
+                except ValueError as e:
+                    logging.info(f'No valid Wyckoff assignments for {str_group}', extra=extra)
+                    progress.update(lattice_task, advance=1)
                     continue
-                except AttributeError as e:
-                    logging.error(f'AttributeError for {groups[i].number} ({groups[i].symbol})')
-                    logging.error(e)
-                    continue
-
                 
-                new_structs = model.to_structures()[:max_gens_at_once]
-                e_form_vals = []
-                good_structs = []            
-                for struct in new_structs:
-                    e_form_val = point_energy(deepcopy(struct))
-                    if e_form_val < 80:
-                        bar.update()
-                        e_form_vals.append(e_form_val)
-                        good_structs.append(struct)                 
+                rows = []
+                total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
+                group_task = progress.add_task(str_group, total=len(groups))
+                for gen_attempt in range(total_allowed):
+                    if len(rows) >= conf.search.num_generations:
+                        break
+
+                    try:
+                        coords, lattice, elems, wsets, sg = model()
+                        log_info = deepcopy(model.log_info)
+                    except ValueError:                        
+                        continue
+                    except AttributeError as e:
+                        logging.error(f'AttributeError for {str_group}', extra=extra)
+                        logging.error(e)
+                        continue
+
+                    
+                    new_structs = model.to_structures()[:conf.search.max_gens_at_once]                    
+                    for struct in new_structs:
+                        e_form_val = point_energy(deepcopy(struct))
+                        if e_form_val > 80:
+                            continue
+
+                        progress.update(group_task, advance=1)
+                        row = {
+                            'struct': struct,
+                            'e_form': e_form_val,
+                            'lat_matrix': lattice.detach().cpu().numpy(),
+                            'gen_attempt': gen_attempt,                            
+                        }
+                        row.update(log_info)
+                        rows.append(row)
+
+                progress.update(lattice_task, advance=1)                    
+                if gen_attempt == total_allowed:
+                    # ran out of attempts
+                    progress.stop_task(group_task)
+                    if rows:
+                        logging.warning(f'{str_group}: Only {len(rows)} successes, not {conf.search.num_generations}', extra=extra)
                     else:
-                        fail_2 += 1
-                            
-                if not good_structs:
+                        logging.info(f'{str_group}: Generation failed', extra=extra)                    
                     continue
-                
-                success_tries += 1                               
-                structs.extend(good_structs)
-                e_forms.extend(e_form_vals)
-                bar.set_description(f'{tries + 1}')
-                for _ in range(len(good_structs)):
-                    wsyms.append('_'.join([wset.wp.letter for wset in wsets]))
-                    lat_matrix.append(torch.flatten(lattice).detach().cpu().numpy())
-                    lat_vol.append(torch.det(lattice).item())                
 
-        if not structs:
-            print(f'Generation for group {groups[i].number} ({groups[i].symbol}) failed')
-            continue
+                group_df = pd.DataFrame(rows)
+                group_df['group_number'] = group.number
+                group_df['group_symbol'] = group.symbol
+                group_df['lattice_type'] = lattice_type.lattice_type
+                group_df['num_attempts'] = gen_attempt
+                big_df.append(group_df)
 
-        if tries >= failure_factor * num_generations:
-            print(f'Only {success_tries} successes, not {num_generations}')
+                if conf.log.use_directory:
+                    df_to_json(group_df, run_dir / Path(f'{group.number}.json'))
         
-        run_df = pd.DataFrame({
-            'gen': structs,
-            'e_form': e_forms,
-            'wsyms': wsyms,
-            'lat_matrix': lat_matrix,
-            'lat_vol': lat_vol,
-        })
-
-        df_to_json(run_df, run_dir / Path(f'{groups[i].number}.json'))
+    big_df = pd.concat(big_df).reset_index(drop=True)
+    if conf.log.use_directory:
+        df_to_json(big_df, run_dir / Path(f'total.json')) 
         
-        best_struct = structs[np.argmin(e_forms)]    
-        # best_relaxed, best_gen_e_form = relaxed_energy(deepcopy(best_struct), long=True)
-        group_rows.append({
-            'lattice_type': lattice_type.lattice_type,
-            'sg_symbol': groups[i].symbol,
-            'sg_number': groups[i].number,
-            'prop_generated': success_tries / tries,
-            'avg_num_successful': len(structs) / tries,
-            'prop_actual_success': len(structs) / (fail_2 + len(structs)),
-            'best_struct': best_struct,
-            # 'best_relaxed': best_relaxed,
-            # 'best_gen_e_form': best_gen_e_form,
-        })
-    
-group_df = pd.DataFrame(group_rows)
+    print('Complete!')
 
-try:
-    df_to_json(group_df, run_dir / 'total.json')
-except Exception as e:
-    raise e    
-    
-print('Complete!')
+
+if __name__ == '__main__':
+    main()

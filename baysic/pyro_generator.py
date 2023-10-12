@@ -1,54 +1,53 @@
 """Full stochastic structure generator using Pyro."""
 
 from copy import deepcopy
-from ctypes.wintypes import WPARAM
-from doctest import debug
 import logging
-from math import floor
-from signal import struct_siginfo
 import numpy as np
-from sympy import N
+import pandas as pd
 import torch
-import torch.nn as nn
 import pyro
 import pyro.distributions as dist
 from pyro.nn import PyroModule, PyroParam, PyroSample
 from pymatgen.core import Composition, Lattice, Structure, Element
 from pymatgen.analysis.molecule_structure_comparator import CovalentRadius
 from tqdm import trange
-from baysic.structure_evaluation import MIN_DIST_RATIO, e_form, point_energy
+from baysic.structure_evaluation import MIN_DIST_RATIO, point_energy
 from baysic.pyro_wp import WyckoffSet
 from baysic.lattice import CubicLattice, atomic_volume, LatticeModel
-from baysic.interpolator import LinearSpline
-from baysic.feature_space import FeatureSpace
-from pyxtal import Group, Wyckoff_position
-from baysic.utils import get_group, get_wp, debug_shapes, pairwise_dist_ratio
-from cctbx.sgtbx.direct_space_asu.reference_table import get_asu
-from scipy.spatial import ConvexHull
-import networkx as nx
+from baysic.utils import debug_shapes, get_group, pairwise_dist_ratio
+from baysic.config import SearchConfig, WyckoffSelectionStrategy, LogConfig
+from pyxtal import Group
 
-
-ngrid = 12
-nbeam = 300
 
 class SystemStructureModel(PyroModule):
     """A stochastic structure generator working within a particular lattice type."""    
-    def __init__(self, comp: Composition, lattice: LatticeModel, force_group=None):
+    def __init__(self, log: LogConfig, config: SearchConfig, comp: Composition, lattice: LatticeModel, force_group: int | str | Group | None = None):
+        """
+        force_group: either a group symbol/number or None to use all potential groups.
+        """
         super().__init__()
+        self.log = log
+        self.config = config
         self.comp = comp
+        self.elements = self.comp.elements
         self.lattice_model = lattice
-        
-        # mode 4.5/5, mean 5.5/5
-        # around 1, matches empirical distribution well
-        self.volume_ratio = PyroSample(dist.Gamma(5.5, 5))            
-        # self.volume_ratio = PyroSample(dist.Gamma(18, 15))            
+                
+        # convert μ and σ to α and β        
+        u = config.lattice_scale_factor_mu
+        s = config.lattice_scale_factor_sigma
+        alpha = u ** 2 / s ** 2
+        beta = u / s ** 2
+        logging.debug(f'α = {alpha:.3f}, β = {beta:.3f}')
+        self.volume_ratio = PyroSample(dist.Gamma(alpha, beta))
         self.atom_volume = atomic_volume(comp)
 
         groups = self.lattice_model.get_groups()
         if force_group is not None:
-            if force_group >= len(groups):
-                raise ValueError(f'{force_group} is not valid index for group list of length {len(groups)}. force_group has to be an index, not a group number.')
-            groups = [groups[force_group]]
+            force_group = get_group(force_group)
+            if force_group.number not in [g.number for g in groups]:
+                raise ValueError(f'{force_group.symbol} is not compatible with the crystal system: {force_group.lattice_type} ≠ {self.lattice_model.lattice_type}')
+            groups = [force_group]
+            
             
         self.group_options = []
         self.wyckoff_options = []
@@ -70,20 +69,33 @@ class SystemStructureModel(PyroModule):
         if len(self.wyckoff_options) == 0:
             raise ValueError('No possible Wyckoff assignments')
 
-        self.group_cards = torch.tensor(self.group_cards).float()
-        self.group_cards /= self.group_cards.sum().float()
-        self.opt_cards = torch.tensor(self.opt_cards).float()
-        self.opt_cards /= self.opt_cards.sum().float()
-        self.count_cards = torch.tensor(self.count_cards).float()
-        self.count_cards = 0.2 ** (self.count_cards - min(self.count_cards))
-        self.count_cards /= self.count_cards.sum().float()
+        strategy = self.config.wyckoff_strategy        
+        if strategy == WyckoffSelectionStrategy.uniform_sg:
+            probs = torch.tensor(self.group_cards).float()
+        elif strategy == WyckoffSelectionStrategy.uniform_wp:
+            probs = torch.tensor(self.opt_cards).float()
+        elif strategy == WyckoffSelectionStrategy.fewer_distinct:            
+            probs = torch.tensor(self.count_cards).float()
+            probs = 0.2 ** (probs - min(probs))
+        elif strategy == WyckoffSelectionStrategy.weighted_wp_count:
+            probs = torch.tensor(self.count_cards).float()
+            unique, frequency = probs.unique(return_counts=True)
+            weights = 0.2 ** (unique - min(unique))
+            for value, freq, weight in zip(unique, frequency, weights):
+                probs[probs == value] = weight / freq
+        else:
+            raise ValueError(f'Could not interpret {strategy}')
         
-        self.wyck_opt = PyroSample(dist.Categorical(probs=self.count_cards))      
+        self.probs = probs / probs.sum().float()
+        self.wyck_opt = PyroSample(dist.Categorical(probs=self.probs))      
+        self.log_info = {
+            'num_assignments': len(combs)            
+        }
                 
         
-    def forward(self):
+    def forward(self):        
         self.volume = self.volume_ratio * self.atom_volume
-        self.lattice = self.lattice_model(self.volume)()
+        self.lattice = self.lattice_model(self.volume)()        
         
         opt = self.wyck_opt        
         self.sg = self.group_options[opt]
@@ -99,17 +111,32 @@ class SystemStructureModel(PyroModule):
         # WPs with 0 degrees of freedom should go first, because they're very cheap to expand out
         # then, letting the high-multiplicity elements go first is best
         # they're the toughest to place, and thus make the best use of parallelism
+        
         mults = np.array([wset.multiplicity for wset in wsets])
         mult_order = np.argsort(-mults)
         no_dofs = mult_order[dofs[mult_order] == 0]
         some_dofs = mult_order[dofs[mult_order] != 0]
+
+        if self.config.order_positions_by_radius:
+            radii = np.array([CovalentRadius.radius[elem.symbol] for elem in np.array(elements)[some_dofs]])
+            some_dofs = some_dofs[np.argsort(-radii)]
         best_order = np.concatenate([no_dofs, some_dofs])
 
         elements = np.array(elements)[best_order]
         wsets = np.array(wsets)[best_order]
         spots = np.array(spots)[best_order]
 
-        for spot, elem, wset in zip(spots, elements, wsets):
+        self.log_info['volume_ratio'] = (self.volume / self.atom_volume).item()
+        self.log_info['volume'] = self.volume.item()
+        self.log_info['wyckoff_letters'] = '_'.join([wset.wp.letter for wset in wsets[np.argsort(best_order)]])        
+        self.log_info['total_dof'] = sum(dofs)
+        self.log_info['group_num'] = self.sg
+        self.log_info['num_total_coords'] = []
+        self.log_info['num_filtered_coords'] = []
+        self.log_info['num_outputs'] = 0
+        self.log_info['num_distance_checks'] = 0
+
+        for spot, elem, wset in zip(spots, elements, wsets):            
             radius = torch.tensor([CovalentRadius.radius[elem.symbol]])
 
             wset = WyckoffSet(self.sg, spot)
@@ -117,10 +144,10 @@ class SystemStructureModel(PyroModule):
                 posns = torch.zeros(3)
                 set_coords = wset.to_all_positions(posns)
             else:
-                base = torch.cartesian_prod(*[torch.linspace(0, 1, ngrid + 2)[1:-1] for _ in range(wset.dof)])
+                base = torch.cartesian_prod(*[torch.linspace(0, 1, self.config.n_grid + 2)[1:-1] for _ in range(wset.dof)])
                 debug_shapes('base')
-                base = base.reshape(ngrid ** wset.dof, wset.dof)
-                max_move = 0.49 / (ngrid + 1)
+                base = base.reshape(self.config.n_grid ** wset.dof, wset.dof)
+                max_move = 0.49 / (self.config.n_grid + 1)
                 low = base - max_move
                 high = base + max_move
                 posns = pyro.sample(f'coords_{len(self.elems)}', dist.Uniform(low, high))
@@ -130,6 +157,7 @@ class SystemStructureModel(PyroModule):
             debug_shapes('set_coords', 'posns')
             if set_coords.shape[-2] > 1:
                 # check pairwise distances
+                self.log_info['num_distance_checks'] += set_coords.shape[0]
                 set_diffs = pairwise_dist_ratio(set_coords[..., 1:, :], set_coords[..., [0], :], radius, radius, self.lattice)
                 debug_shapes('set_diffs')
                 # [ngrid, 1, ngrid, dof - 1] if used a grid search
@@ -151,26 +179,28 @@ class SystemStructureModel(PyroModule):
             debug_shapes('set_coords', 'set_valid')
             good_all_coords = set_coords[torch.where(set_valid)[0], :, :]
             # only need to check base coord
-            good_coords = good_all_coords[:, :1, :]
-            
+            good_coords = good_all_coords[:, :1, :]            
             
             if self.coords.numel():                    
                 radii = torch.tensor([CovalentRadius.radius[el.symbol] for el in self.elems])
                 coords = self.coords                          
                 debug_shapes('good_coords', 'coords', 'radius', 'radii') 
                 # print(self.elems, self.wsets, wset.multiplicity)
+                self.log_info['num_distance_checks'] += coords.shape[0] * good_coords.shape[0]
                 cdists = pairwise_dist_ratio(good_coords, coords, radius, radii, self.lattice)
                 # shape [coords_batch, coords_num, good_batch, good_num]
                 
                 min_cdists = cdists.permute((0, 2, 1, 3)).min(dim=-1)[0].min(dim=-1)[0]
                 # shape [coords_batch, good_batch]                    
-            
-                if not (min_cdists >= MIN_DIST_RATIO).any():
+                            
+                if not (min_cdists >= MIN_DIST_RATIO).any():                    
                     raise ValueError('Could not find assignment')
                 
                 # take the best nbeam pairs of (old_coords, new_coords) that work
                 all_old, all_new = torch.where(min_cdists >= MIN_DIST_RATIO)
-                adds = torch.argsort(min_cdists[all_old, all_new], descending=True)[:nbeam]
+                adds = torch.argsort(min_cdists[all_old, all_new], descending=True)
+                self.log_info['num_total_coords'].append(adds.shape[0])
+                adds = adds[:self.config.n_parallel_structs]
 
                 old = self.coords[all_old[adds]]
                 new = good_all_coords[all_new[adds]]
@@ -180,11 +210,15 @@ class SystemStructureModel(PyroModule):
 
             else:
                 # no other coordinates to worry about, just add all found coordinates
+                self.log_info['num_total_coords'].append(good_all_coords.shape[0])
                 self.coords = good_all_coords
-                
+                            
+            self.log_info['num_filtered_coords'].append(self.coords.shape[0])
             self.elems.extend([elem] * wset.multiplicity)
             self.wsets.append(wset)
                         
+
+        self.log_info['num_outputs'] = self.coords.shape[0]
         return (self.coords, self.lattice, self.elems, self.wsets, self.sg)
     
     def to_structures(self) -> list[Structure]:
@@ -209,27 +243,38 @@ class SystemStructureModel(PyroModule):
     
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, force=True)
-    torch.manual_seed(34761)
+    from rich.console import Console
+    from rich.markdown import Markdown
+    from rich.progress import track
+    from rich.logging import RichHandler
+    console = Console()
+    torch.manual_seed(34762)        
+    # logging.basicConfig(
+    #     level="INFO", format='%(message)s', datefmt="[%X]", handlers=[RichHandler()]
+    # )
     mod = SystemStructureModel(
+        LogConfig(),
+        SearchConfig(order_positions_by_radius=False),
         Composition({'Mg': 8, 'Al': 16, 'O': 32}),
         # Composition.from_dict({'K': 8, 'Li': 4, 'Cr': 4, 'F': 24}),        
         # Composition.from_dict({'Sr': 3, 'Ti': 1, 'O': 1}),
-        CubicLattice
+        CubicLattice,
+        force_group=227
     )
 
-    structs = []
-    success = []
-    actual_success = []
-    for _ in trange(10):
+    rows = []
+    for _ in track(range(100)):
         try:
             coords, lat, elems, wsets, sg = mod.forward()
-            new_structs = mod.to_structures()
-            print(len(new_structs))
-            structs.extend(new_structs)
-            actual_success.extend([point_energy(deepcopy(struct)) < 80 for struct in new_structs])
-            success.append(len(new_structs))
-        except ValueError:
-            success.append(0)
+            new_structs = mod.to_structures()            
+        except ValueError as e:
+            # console.print(e)
+            pass
+        finally:
+            rows.append(deepcopy(mod.log_info))
 
-    print(np.mean(np.array(success) > 0), np.mean(success), np.mean(actual_success))
+    df = pd.DataFrame(rows)
+    df['num_checked'] = df['num_filtered_coords'].apply(sum)
+    console.print(Markdown(df.to_markdown()))
+    console.print(Markdown(df.describe(include=np.number).to_markdown()))
+    console.print(Markdown(df.query('num_outputs == 0').describe(include=np.number).to_markdown()))

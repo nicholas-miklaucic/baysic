@@ -30,7 +30,7 @@ class LatticeModel(PyroModule):
         volume (float): Lattice volume in angstroms cubed.
         """
         super().__init__()
-        self.volume = volume       
+        self.volume = volume
 
     def forward(self) -> torch.Tensor:
         """Returns the matrix for the lattice."""
