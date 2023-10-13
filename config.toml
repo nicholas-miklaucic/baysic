@@ -1,5 +1,0 @@
-[target]
-mp_id = "mp-11251"
-
-[log]
-log_dir_mode = "append"

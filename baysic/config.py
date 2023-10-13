@@ -82,15 +82,6 @@ class TargetStructureConfig:
 
 class WyckoffSelectionStrategy(Enum):
     """How to weight which Wyckoff assignments are selected."""
-
-        # self.group_cards = torch.tensor(self.group_cards).float()
-        # self.group_cards /= self.group_cards.sum().float()
-        # self.opt_cards = torch.tensor(self.opt_cards).float()
-        # self.opt_cards /= self.opt_cards.sum().float()
-        # self.count_cards = torch.tensor(self.count_cards).float()
-        # self.count_cards = 0.2 ** (self.count_cards - min(self.count_cards))
-        # self.count_cards /= self.count_cards.sum().float()
-
     # Assign an equal probability for a WP assignment from each space group to be chosen.    
     uniform_sg = 'uniform_sg'
     # Assign an equal probability for each WP assignment to be chosen. Some groups have
@@ -103,6 +94,9 @@ class WyckoffSelectionStrategy(Enum):
     # of assignments of different multiplicities, which is probably strictly worse than the above,
     # but it's included for backwards compatibility and testing.
     fewer_distinct = 'fewer_distinct'
+    # Randomly sample, completely eschewing the number of generations. Try to weight towards fewer
+    # distinct Wyckoff combinations when doing so. This is much faster but still experimental.
+    sample_distinct = 'sample_distinct'
 
 
 @dataclass
@@ -140,7 +134,7 @@ class SearchConfig:
     # This number times (num_generations / max_gens_at_once) is the number of attempted generations before generations 
     # are stopped early. Keeping this low avoids wasting time on difficult generations, many of which are unlikely to 
     # be useful, but for some structures you may need to increase this to better search for needles in a haystack.
-    allowed_attempts_per_gen: float = 5.0
+    allowed_attempts_per_gen: float = 10.0
 
     # The average volume of generated lattices, as a multiple of the sum of the volumes of the constituent atoms and their
     # covalent radii. Increasing this makes it easier to generate valid structures, but means that more of those structures
@@ -158,6 +152,10 @@ class SearchConfig:
     # to fail quickly, so the idea is that bigger atoms are more likely to be impossible to fit in a lattice.) Otherwise,
     # orders by degrees of freedom.
     order_positions_by_radius: bool = False
+
+    # The space groups to search. This should mainly be used for testing purposes: invalid groups are already factored out.
+    # Takes precedence over smoke_test, which by default only tries the first two groups of each lattice system.
+    groups_to_search: Optional[list[int]] = None
 
     def __post_init__(self):
         if self.smoke_test:

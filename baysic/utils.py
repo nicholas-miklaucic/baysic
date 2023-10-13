@@ -2,16 +2,12 @@
 
 import json
 from os import PathLike
-import os
 import typing
 import numpy as np
 import pandas as pd
 from pyxtal import Group, Wyckoff_position
 from pyxtal.symmetry import symbols as group_symbols
 
-import crystal_toolkit.components as ctc
-import dash
-from dash import html
 from pymatgen.core import Structure
 import torch
 import logging
@@ -40,6 +36,9 @@ def get_group(group: int | str | Group) -> Group:
     
 
 def quick_view(struct: Structure, port: int = 8051, **kwargs):
+    import crystal_toolkit.components as ctc
+    import dash
+    from dash import html
     app = dash.Dash()
 
     component = ctc.StructureMoleculeComponent(struct, **kwargs)
@@ -68,24 +67,54 @@ def debug_shapes(*names):
     finally:
         del frame
 
-def pairwise_dist_ratio(c1, c2, rads1, rads2, lattice):
+def _pairwise_dist_ratio(c1: torch.Tensor, c2: torch.Tensor, rads1: torch.Tensor, rads2: torch.Tensor, lattice: torch.Tensor) -> torch.Tensor:
     """Gets pairwise distances (as a ratio of the radii sum) using the given lattice.
 
-    c1: [A, B, 3]
+    c1: [B, 3]
     c2: [C, D, 3]
-    rads1: broadcastable to [A, B]
-    rads2: broadcastable to [C, D]
+    rads1: broadcastable to [B]
+    rads2: broadcastable to [D]
     lattice: [3, 3]
 
-    returns: [C, D, A, B]
+    returns: [C]
     """
-    set_diffs = c1.unsqueeze(0).unsqueeze(0) - c2.unsqueeze(-2).unsqueeze(-2)
-    set_diffs = set_diffs % 1
-    set_diffs = torch.minimum(set_diffs, 1 - set_diffs)
-    set_cart_diffs = torch.matmul(set_diffs, lattice.T)                
-    diffs = torch.sqrt(torch.sum(torch.square(set_cart_diffs), axis=-1))
-    rads = rads1.unsqueeze(0).unsqueeze(1) + rads2.unsqueeze(-1).unsqueeze(-1)
-    return diffs / rads
+    set_diffs = c1.unsqueeze(-2).unsqueeze(-2) - c2.unsqueeze(0)
+    set_diffs = torch.minimum(set_diffs % 1, -set_diffs % 1)
+    set_diffs = torch.matmul(set_diffs, lattice.T)
+    set_diffs **= 2
+    # [B, C, D, 3]
+    # sum over last axis
+    # then take min over B and D
+    diffs = torch.sum(set_diffs, dim=-1)
+    diffs.sqrt_()
+    rads = rads1.reshape(-1, 1, 1) + rads2.reshape(1, 1, -1)
+    return (diffs / rads).min(dim=-1)[0].min(dim=0)[0]
+
+pairwise_dist_ratio = torch.vmap(_pairwise_dist_ratio, (0, None, None, None, None), chunk_size=256)
+
+def _pairwise_diag_dist_ratio(c1: torch.Tensor, radius: torch.Tensor, lattice: torch.Tensor) -> torch.Tensor:
+    """Gets pairwise one-vs-rest (as a ratio of the radii sum) using the given lattice.
+
+    c1: [B, 3]
+    radius: [1] or [B]
+    lattice: [3, 3]
+
+    Computes inner distance matrix [A, B - 1, 3]
+
+    returns: [A]
+    """
+    set_diffs = c1[1:, :] - c1[[0], :]
+    set_diffs = torch.minimum(set_diffs % 1, -set_diffs % 1)
+    set_diffs = torch.matmul(set_diffs, lattice.T)
+    set_diffs **= 2
+    # [A, B - 1, 3]
+    # sum over last axis
+    # then take min over B and D
+    diffs = torch.sum(set_diffs, dim=-1)
+    diffs.sqrt_()    
+    return (diffs / (2 * radius.unsqueeze(0))).min(dim=-1)[0]
+
+pairwise_diag_dist_ratio = torch.vmap(_pairwise_diag_dist_ratio, (0, None, None), chunk_size=256)
 
 
 from monty.json import MontyDecoder, MontyEncoder

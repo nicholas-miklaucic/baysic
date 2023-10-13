@@ -2,8 +2,11 @@
 
 import warnings
 
-warnings.filterwarnings('ignore', module='*mprester*')
+from baysic.errors import BaysicError, CoordinateGenerationFailed, StructureGenerationError, WyckoffAssignmentImpossible
 
+warnings.filterwarnings('ignore', module='.*mprester.*')
+
+import gc
 from copy import deepcopy
 from dataclasses import dataclass
 from turtle import update
@@ -36,7 +39,7 @@ from rich.progress import Progress
 # https://next-gen.materialsproject.org/materials/mp-2554
 # https://next-gen.materialsproject.org/materials/mp-10408
 
-@pyrallis.wrap('config.toml')
+@pyrallis.wrap(Path('configs') / 'config.toml')
 def main(conf: MainConfig):
     """Runs a search to generate structures for a specific composition."""
 
@@ -45,7 +48,13 @@ def main(conf: MainConfig):
 
     FORMAT = "%(message)s"
     logging.basicConfig(
-        level=conf.cli.verbosity.value, format=FORMAT, datefmt="[%X]", handlers=[RichHandler()]
+        level=conf.cli.verbosity.value, format=FORMAT, datefmt="[%X]", 
+        handlers=[RichHandler(
+            rich_tracebacks=True,
+            show_time = False,
+            show_level = False,
+            show_path = False,            
+        )]
     )
 
     if conf.log.use_directory:
@@ -65,12 +74,16 @@ def main(conf: MainConfig):
         run_dir.mkdir(exist_ok=True)
     
     big_df = []
-    with Progress(disable=not conf.cli.show_progress, speed_estimate_period=1) as progress:        
+    with Progress(disable=not conf.cli.show_progress) as progress:        
         for lattice_type in LATTICES:
             groups = lattice_type.get_groups()
-            if conf.search.smoke_test:
-                # just do two iterations per lattice type, quick smoke test
+            # manually specified groups override everything
+            # smoke testing only requires testing two groups per system
+            if conf.search.groups_to_search is not None:
+                groups = [g for g in groups if g.number in conf.search.groups_to_search]
+            elif conf.search.smoke_test:
                 groups = groups[:2]
+            
 
             lattice_task = progress.add_task(lattice_type.lattice_type.title(), total=len(groups))
             for group in groups:
@@ -83,22 +96,22 @@ def main(conf: MainConfig):
                     continue
                 try:
                     model = SystemStructureModel(conf.log, conf.search, conf.target.composition, lattice_type, group)
-                except ValueError as e:
+                except WyckoffAssignmentImpossible as e:
                     logging.info(f'No valid Wyckoff assignments for {str_group}', extra=extra)
                     progress.update(lattice_task, advance=1)
                     continue
                 
                 rows = []
                 total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
-                group_task = progress.add_task(str_group, total=len(groups))
+                group_task = progress.add_task(str_group, total=conf.search.num_generations)
                 for gen_attempt in range(total_allowed):
                     if len(rows) >= conf.search.num_generations:
                         break
 
                     try:
                         coords, lattice, elems, wsets, sg = model()
-                        log_info = deepcopy(model.log_info)
-                    except ValueError:                        
+                        log_info = deepcopy(model.log_info)                        
+                    except CoordinateGenerationFailed:
                         continue
                     except AttributeError as e:
                         logging.error(f'AttributeError for {str_group}', extra=extra)
@@ -121,6 +134,7 @@ def main(conf: MainConfig):
                         }
                         row.update(log_info)
                         rows.append(row)
+                    gc.collect()                        
 
                 progress.update(lattice_task, advance=1)                    
                 if gen_attempt == total_allowed:

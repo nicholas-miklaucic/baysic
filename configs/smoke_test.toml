@@ -1,0 +1,10 @@
+[search]
+smoke_test = true
+
+[target]
+mp_id = "mp-22862"
+
+[log]
+use_wandb = false
+use_directory = true
+log_dir_mode = "overwrite"

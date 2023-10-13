@@ -1,0 +1,9 @@
+[target]
+mp_id = "mp-510376"
+
+[log]
+log_dir_mode = "new"
+
+[search]
+order_positions_by_radius = true
+wyckoff_strategy = 'sample_distinct'

@@ -1,0 +1,11 @@
+[target]
+mp_id = "mp-11251"
+
+[log]
+log_dir_mode = "overwrite"
+
+[search]
+rng_seed = 16274
+# groups_to_search = [47, 77, 16, 194, 131, 2, 10, 223, 71, 195, 89]
+groups_to_search = [47, 77, 16]
+num_generations = 50
