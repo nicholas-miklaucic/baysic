@@ -133,8 +133,7 @@ def main(conf: MainConfig):
                             'gen_attempt': gen_attempt,                            
                         }
                         row.update(log_info)
-                        rows.append(row)
-                    gc.collect()                        
+                        rows.append(row)                    
 
                 progress.update(lattice_task, advance=1)                    
                 if gen_attempt == total_allowed:

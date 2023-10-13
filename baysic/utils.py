@@ -12,7 +12,10 @@ from pymatgen.core import Structure
 import torch
 import logging
 import inspect
+from functools import lru_cache
 
+
+@lru_cache(maxsize=1024)
 def get_wp(sg: Group, wp: int | str | Wyckoff_position) -> Wyckoff_position:
     if isinstance(wp, Wyckoff_position):
         return wp
@@ -22,6 +25,7 @@ def get_wp(sg: Group, wp: int | str | Wyckoff_position) -> Wyckoff_position:
         return Wyckoff_position.from_group_and_index(sg.number, wp)
     
 
+@lru_cache(maxsize=256)
 def get_group(group: int | str | Group) -> Group:
     if isinstance(group, Group):
         return group

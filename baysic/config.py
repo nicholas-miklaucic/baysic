@@ -5,7 +5,6 @@ import logging
 import os
 from pathlib import Path
 import pyrallis
-from mp_api.client import MPRester
 from pymatgen.core import Composition, Structure, Lattice
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from enum import Enum
@@ -13,6 +12,10 @@ import json
 from torch import Value
 from pyrallis import field
 from typing import Optional
+
+from baysic.errors import BaysicError
+
+PLACEHOLDER_MP_ID = 'mp-XXXXX'
 
 pyrallis.set_config_type('toml')
 
@@ -28,10 +31,21 @@ class TargetStructureConfig:
     
     def __post_init__(self):
         """Get the structure and spacegroup info from the ID."""
-        with MPRester(self.api_key, mute_progress_bars=True) as mpr:
-            self.struct = mpr.get_structure_by_material_id(self.mp_id, conventional_unit_cell=True)
-            self.sga = SpacegroupAnalyzer(self.struct)
-            self.symm = self.sga.get_symmetrized_structure()
+        if self.mp_id == PLACEHOLDER_MP_ID:
+            if __name__ == '__main__':
+                # allow placeholder name: all we want to do is write it to a file
+                pass
+            else:
+                # invalid name, but we can be helpful
+                raise BaysicError(f'Target MP ID {self.mp_id} is invalid. Did you forget to change the placeholder?')
+        else:
+            # for some reason, this is a huge import
+            # so only load if we need it
+            from mp_api.client import MPRester
+            with MPRester(self.api_key, mute_progress_bars=True) as mpr:
+                self.struct = mpr.get_structure_by_material_id(self.mp_id, conventional_unit_cell=True)
+                self.sga = SpacegroupAnalyzer(self.struct)
+                self.symm = self.sga.get_symmetrized_structure()
 
     @property
     def sg_symbol(self) -> str:
@@ -233,3 +247,18 @@ def to_dict(config) -> dict:
     """Converts a config (dataclass) to a dictionary suitable for using with W&B."""    
     with pyrallis.config_type('json'):
         print(json.loads(pyrallis.dump(config)))
+
+
+if __name__ == '__main__':
+    from rich.prompt import Confirm
+    from pathlib import Path
+
+    if Confirm.ask('Generate configs/defaults.toml and configs/minimal.toml?'):
+        default_path = Path('configs') / 'defaults.toml'
+        minimal_path = Path('configs') / 'minimal.toml'
+        default = MainConfig(target=TargetStructureConfig(mp_id=PLACEHOLDER_MP_ID))
+        with open(default_path, 'w') as outfile:
+            pyrallis.cfgparsing.dump(default, outfile)
+
+        with open(minimal_path, 'w') as outfile:
+            pyrallis.cfgparsing.dump(default, outfile, omit_defaults=True)
