@@ -47,7 +47,12 @@ class SystemStructureModel(PyroModule):
         if force_group is not None:
             force_group = get_group(force_group)
             if force_group.number not in [g.number for g in groups]:
-                raise StructureGenerationError(f'{force_group.symbol} is not compatible with the crystal system: {force_group.lattice_type} ≠ {self.lattice_model.lattice_type}')
+                raise StructureGenerationError(
+                    self.comp,
+                    self.lattice_model,
+                    [force_group],
+                    f'{force_group.symbol} is not compatible with the crystal system: {force_group.lattice_type} ≠ {self.lattice_model.lattice_type}'
+                )
             
             groups = [force_group]
             
@@ -67,7 +72,12 @@ class SystemStructureModel(PyroModule):
                     self.group_options.append(sg)
 
             if len(self.group_options) == 0:
-                raise WyckoffAssignmentImpossible('No possible Wyckoff assignments')
+                raise WyckoffAssignmentImpossible(
+                    self.comp,
+                    self.lattice_model,
+                    groups,
+                    'No possible Wyckoff assignments'
+                )
             
             self.group_opt = PyroSample(dist.Categorical(logits=torch.zeros(len(self.group_options))))
                     
@@ -85,7 +95,11 @@ class SystemStructureModel(PyroModule):
                     self.count_cards.extend([len(sum(comb, [])) + 1 for comb in combs])
 
             if len(self.wyckoff_options) == 0:
-                raise WyckoffAssignmentImpossible('No possible Wyckoff assignments')
+                raise WyckoffAssignmentImpossible(
+                    self.comp,
+                    self.lattice_model,
+                    groups,
+                    'No possible Wyckoff assignments')
 
             strategy = self.config.wyckoff_strategy        
             if strategy == WyckoffSelectionStrategy.uniform_sg:
@@ -121,18 +135,18 @@ class SystemStructureModel(PyroModule):
             num_atoms = list(self.comp.values())            
             all_wps = group.Wyckoff_positions                            
             mults = torch.tensor([wp.multiplicity for wp in all_wps]).float()
-            has_freedom = torch.tensor([wp.get_dof() != 0 for wp in all_wps])
-            removed = torch.zeros_like(has_freedom)
+            has_freedom = torch.tensor([wp.get_dof() != 0 for wp in all_wps])            
             def try_assignment():
                 complete_assignment = []
                 for count in num_atoms:    
+                    removed = torch.zeros_like(has_freedom)
                     assignment = []
                     curr_count = count
                     while curr_count != 0:
                         is_possible = torch.where(~removed & (mults <= curr_count))[0]
                         if len(is_possible) == 0:
                             return None
-                        weights = mults[is_possible] * 5
+                        weights = mults[is_possible] * 3
                         _uniq, inv, counts = torch.unique(mults[is_possible], return_inverse=True, return_counts=True)
                         weights /= counts[inv]
                         weights /= weights.sum()
@@ -155,7 +169,11 @@ class SystemStructureModel(PyroModule):
             if comb is None:
                 # note the difference from WyckoffAssignmentImpossible: this should 
                 # (hopefully) never happen and is a problem with the model
-                raise WyckoffAssignmentFailed('Could not find valid Wyckoff assignment')
+                raise WyckoffAssignmentFailed(
+                    self.comp,
+                    self.lattice_model,
+                    [group],
+                    'Could not find valid Wyckoff assignment')
 
             self.sg = group.number
         else:
@@ -243,7 +261,7 @@ class SystemStructureModel(PyroModule):
             # only need to check base coord
             good_coords = good_all_coords[:, :1, :]            
             
-            if self.coords.numel():                    
+            if self.coords.numel():
                 radii = torch.tensor([CovalentRadius.radius[el.symbol] for el in self.elems])
                 coords = self.coords                                          
                 # print(self.elems, self.wsets, wset.multiplicity)
@@ -255,21 +273,27 @@ class SystemStructureModel(PyroModule):
                 min_cdists = pairwise_dist_ratio(good_coords, coords, radius, radii, self.lattice)
                 debug_shapes('good_coords', 'coords', 'radius', 'radii', 'min_cdists')
                 # min_cdists = cdists.permute((0, 2, 1, 3)).min(dim=-1)[0].min(dim=-1)[0]                                
-                            
-                if not (min_cdists >= MIN_DIST_RATIO).any():                    
+
+                good_batch, coord_batch = min_cdists.shape                
+                min_cdists = min_cdists.flatten()
+                k = min(min_cdists.numel(), self.config.n_parallel_structs)
+                dists, inds = torch.topk(min_cdists, k, largest=False, sorted=False)
+                inds = inds[dists >= MIN_DIST_RATIO]
+                dists = dists[dists >= MIN_DIST_RATIO]
+                if inds.numel() == 0:
                     raise CoordinateGenerationFailed(
                         self.log_info, 
                         'No structures found with acceptable inter-atomic distances'
                     )
-                
-                # take the best nbeam pairs of (old_coords, new_coords) that work
-                all_new, all_old = torch.where(min_cdists >= MIN_DIST_RATIO)
-                adds = torch.argsort(min_cdists[all_new, all_old], descending=True)
-                self.log_info['num_total_coords'].append(adds.shape[0])
-                adds = adds[:self.config.n_parallel_structs]
 
-                old = self.coords[all_old[adds]]
-                new = good_all_coords[all_new[adds]]
+                # convert flat index i to original good_batch, coord_batch
+                all_new = inds // coord_batch
+                all_old = inds % coord_batch
+                
+                self.log_info['num_total_coords'].append(all_new.numel())                
+
+                old = self.coords[all_old]
+                new = good_all_coords[all_new]
                 debug_shapes('old', 'new')
                 self.coords = torch.cat([old, new], dim=1)                
                 # self.coords.append(set_coords[torch.where(set_valid)[0][0]].unsqueeze(0))
@@ -321,11 +345,11 @@ if __name__ == '__main__':
         LogConfig(),
         SearchConfig(order_positions_by_radius=False, wyckoff_strategy=WyckoffSelectionStrategy.sample_distinct,
                      rng_seed=1234),
-        # Composition({'Mg': 8, 'Al': 16, 'O': 32}),
+        Composition({'Mg': 8, 'Al': 16, 'O': 32}),
         # Composition.from_dict({'K': 8, 'Li': 4, 'Cr': 4, 'F': 24}),        
-        Composition('Ce2B2Rh6'),
-        OrthorhombicLattice,
-        force_group=16
+        # Composition('Ce2B2Rh6'),
+        CubicLattice,
+        force_group=227
     )
 
     rows = []

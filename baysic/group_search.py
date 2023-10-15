@@ -2,7 +2,9 @@
 
 import warnings
 
-from baysic.errors import BaysicError, CoordinateGenerationFailed, StructureGenerationError, WyckoffAssignmentImpossible
+from flask.scaffold import F
+
+from baysic.errors import BaysicError, CoordinateGenerationFailed, StructureGenerationError, WyckoffAssignmentFailed, WyckoffAssignmentImpossible
 
 warnings.filterwarnings('ignore', module='.*mprester.*')
 
@@ -16,7 +18,7 @@ import logging
 import numpy as np
 
 import torch
-from baysic.config import FileLoggingMode, MainConfig
+from baysic.config import FileLoggingMode, MainConfig, TargetStructureConfig
 from baysic.lattice import LATTICES, CubicLattice
 from baysic.pyro_generator import SystemStructureModel
 from pathlib import Path
@@ -24,7 +26,7 @@ from datetime import datetime
 import pandas as pd
 from tqdm import tqdm, trange
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from baysic.structure_evaluation import e_form, point_energy, relaxed_energy
+from baysic.structure_evaluation import e_form, point_energies, point_energy, relaxed_energy
 from pymatgen.core import Composition, Structure, Lattice
 import pandas as pd
 import pyrallis
@@ -32,6 +34,7 @@ import pyrallis
 from baysic.utils import df_to_json
 from rich.logging import RichHandler
 from rich.progress import Progress
+import rich.progress as prog
 
 # comp = Composition("K4C2N4")
 # https://next-gen.materialsproject.org/materials/mp-510376
@@ -39,7 +42,7 @@ from rich.progress import Progress
 # https://next-gen.materialsproject.org/materials/mp-2554
 # https://next-gen.materialsproject.org/materials/mp-10408
 
-@pyrallis.wrap(Path('configs') / 'config.toml')
+@pyrallis.wrap()
 def main(conf: MainConfig):
     """Runs a search to generate structures for a specific composition."""
 
@@ -74,7 +77,20 @@ def main(conf: MainConfig):
         run_dir.mkdir(exist_ok=True)
     
     big_df = []
-    with Progress(disable=not conf.cli.show_progress) as progress:        
+    with Progress(
+        prog.TextColumn('[progress.description]{task.description}'),
+        prog.BarColumn(80, 
+                       'light_pink3', 
+                       'deep_sky_blue4',
+                       'green'),
+        prog.MofNCompleteColumn(),
+        prog.TimeElapsedColumn(),
+        prog.TimeRemainingColumn(),
+        prog.SpinnerColumn(),
+        refresh_per_second=3,     
+        disable=not conf.cli.show_progress) as progress:
+        total = 0
+        lat_groups = {}
         for lattice_type in LATTICES:
             groups = lattice_type.get_groups()
             # manually specified groups override everything
@@ -83,49 +99,71 @@ def main(conf: MainConfig):
                 groups = [g for g in groups if g.number in conf.search.groups_to_search]
             elif conf.search.smoke_test:
                 groups = groups[:2]
-            
 
-            lattice_task = progress.add_task(lattice_type.lattice_type.title(), total=len(groups))
+            lat_groups[lattice_type.lattice_type] = groups
+            total += len(groups) * conf.search.num_generations
+
+        
+        total_task = progress.add_task(f'[bold] {conf.target.formula} Generation [/bold]', total=total)
+        
+        for lattice_type in LATTICES:
+            groups = lat_groups[lattice_type.lattice_type]            
+
+            lattice_total = len(groups) * conf.search.num_generations
+            lattice_task = progress.add_task(lattice_type.lattice_type.title(), 
+                                             total=lattice_total)
             for group in groups:
                 str_group = f'[sky_blue3] [bold] {group.number} [/bold] [italic] ({group.symbol}) [/italic] [/sky_blue3]'
                 extra = {'markup': True}
                 log_dir = run_dir / Path(f'{group.number}.json')
                 if conf.log.log_dir_mode == FileLoggingMode.append and log_dir.exists():
                     logging.info(f'{str_group} already done, continue', extra=extra)
-                    progress.update(lattice_task, advance=1)
+                    for task in (total_task, lattice_task):
+                        progress.update(task, advance=conf.search.num_generations)
                     continue
                 try:
                     model = SystemStructureModel(conf.log, conf.search, conf.target.composition, lattice_type, group)
                 except WyckoffAssignmentImpossible as e:
                     logging.info(f'No valid Wyckoff assignments for {str_group}', extra=extra)
-                    progress.update(lattice_task, advance=1)
+                    for task in (total_task, lattice_task):
+                        progress.update(task, advance=conf.search.num_generations)                    
                     continue
                 
                 rows = []
-                total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
                 group_task = progress.add_task(str_group, total=conf.search.num_generations)
+                total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
                 for gen_attempt in range(total_allowed):
                     if len(rows) >= conf.search.num_generations:
                         break
 
                     try:
+                        # gc.collect()
                         coords, lattice, elems, wsets, sg = model()
-                        log_info = deepcopy(model.log_info)                        
+                        log_info = deepcopy(model.log_info)
+                    except WyckoffAssignmentFailed as e:
+                        # this ideally shouldn't be happening
+                        # track these failures more closely
+                        logging.exception(e)
+                        continue
                     except CoordinateGenerationFailed:
                         continue
                     except AttributeError as e:
                         logging.error(f'AttributeError for {str_group}', extra=extra)
                         logging.error(e)
-                        continue
+                        continue    
+
+
 
                     
                     new_structs = model.to_structures()[:conf.search.max_gens_at_once]                    
-                    for struct in new_structs:
-                        e_form_val = point_energy(deepcopy(struct))
+                    e_form_vals = point_energies(new_structs)
+                    for struct, e_form_val in zip(new_structs, e_form_vals):                        
                         if e_form_val > 80:
                             continue
 
-                        progress.update(group_task, advance=1)
+                        for task in (total_task, lattice_task, group_task):
+                            progress.update(task, advance=1)
+                        
                         row = {
                             'struct': struct,
                             'e_form': e_form_val,
@@ -135,14 +173,19 @@ def main(conf: MainConfig):
                         row.update(log_info)
                         rows.append(row)                    
 
-                progress.update(lattice_task, advance=1)                    
+                
                 if gen_attempt == total_allowed:
-                    # ran out of attempts
-                    progress.stop_task(group_task)
+                    # ran out of attempts                    
                     if rows:
                         logging.warning(f'{str_group}: Only {len(rows)} successes, not {conf.search.num_generations}', extra=extra)
+                        remaining = conf.search.num_generations - len(rows)
+                        progress.update(total_task, advance=remaining)
+                        progress.update(lattice_task, advance=remaining)
+                    
                     else:
                         logging.info(f'{str_group}: Generation failed', extra=extra)                    
+                    
+                    progress.update(group_task, completed=True)
                     continue
 
                 group_df = pd.DataFrame(rows)

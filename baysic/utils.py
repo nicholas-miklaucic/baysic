@@ -71,6 +71,11 @@ def debug_shapes(*names):
     finally:
         del frame
 
+def min_mod_1_(x: torch.Tensor):
+    """Transforms x -> min(x % 1, -x % 1), without making copies."""
+    # equal to 0.5 - |0.5 - (x % 1)|
+    x.frac_().abs_().neg_().add_(0.5).abs_().neg_().add(0.5)
+
 def _pairwise_dist_ratio(c1: torch.Tensor, c2: torch.Tensor, rads1: torch.Tensor, rads2: torch.Tensor, lattice: torch.Tensor) -> torch.Tensor:
     """Gets pairwise distances (as a ratio of the radii sum) using the given lattice.
 
@@ -83,7 +88,8 @@ def _pairwise_dist_ratio(c1: torch.Tensor, c2: torch.Tensor, rads1: torch.Tensor
     returns: [C]
     """
     set_diffs = c1.unsqueeze(-2).unsqueeze(-2) - c2.unsqueeze(0)
-    set_diffs = torch.minimum(set_diffs % 1, -set_diffs % 1)
+    # set_diffs = torch.minimum(set_diffs % 1, -set_diffs % 1)
+    min_mod_1_(set_diffs)
     set_diffs = torch.matmul(set_diffs, lattice.T)
     set_diffs **= 2
     # [B, C, D, 3]

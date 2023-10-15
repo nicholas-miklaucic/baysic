@@ -2,5 +2,11 @@
     "[python]": {
         "editor.defaultFormatter": "ms-python.autopep8"
     },
-    "python.formatting.provider": "none"
+    "python.formatting.provider": "none",
+    "notebook.output.fontSize": 11,
+    "notebook.output.lineHeight": 12,
+    "notebook.scrolling.revealNextCellOnExecute": "firstLine",
+    "evenBetterToml.formatter.reorderKeys": true,
+    "notebook.output.fontFamily": "'SF Mono'",
+    "notebook.output.wordWrap": true
 }

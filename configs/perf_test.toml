@@ -1,12 +1,14 @@
 [target]
-mp_id = "mp-11251"
+mp_id = "mp-29816"
 
 [log]
-log_dir_mode = "overwrite"
+log_dir_mode = "append"
 
 [search]
-wyckoff_strategy = "sample_distinct"
-rng_seed = 16274
 # groups_to_search = [47, 77, 16, 194, 131, 2, 10, 223, 71, 195, 89]
-groups_to_search = [47, 77, 16]
-num_generations = 50
+# groups_to_search = [47, 77, 16]
+allowed_attempts_per_gen = 5.0
+num_generations = 200
+order_positions_by_radius = true
+rng_seed = 16274
+wyckoff_strategy = "sample_distinct"

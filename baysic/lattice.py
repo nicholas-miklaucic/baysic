@@ -191,7 +191,10 @@ class HexagonalLattice(LatticeModel):
             [0.,           0.,                       c_scaled] 
         ])
 
-LATTICES: list[LatticeModel] = [CubicLattice, TetragonalLattice, OrthorhombicLattice, TriclinicLattice, MonoclinicLattice, HexagonalLattice]
+# for progress bars, it's nice if this is roughly balanced in terms of difficulty
+LATTICES: list[LatticeModel] = [
+    HexagonalLattice, TetragonalLattice, OrthorhombicLattice, 
+    TriclinicLattice, MonoclinicLattice, CubicLattice]
 
 if __name__ == '__main__':
     for lat in LATTICES:

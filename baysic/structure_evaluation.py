@@ -85,6 +85,24 @@ def point_energy(struct: Structure) -> float:
         return 100 + prediction['e'].item()
     else: 
         return prediction['e'].item()
+    
+def point_energies(structs: list[Structure]) -> list[float]:
+    if len(structs) == 1:
+        return [point_energy(structs[0])]
+    
+    global chgnet
+    if chgnet is None:
+        chgnet = CHGNet.load()
+
+    predictions = chgnet.predict_structure(structs, task='e')
+    preds = []
+    for struct, pred in zip(structs, predictions):
+        if not is_structure_valid(struct):        
+            preds.append(100 + pred['e'].item())
+        else: 
+            preds.append(pred['e'].item())
+
+    return preds
 
 def relaxed_energy(struct: Structure, long: bool = False) -> (Structure, float):
     global relaxer
@@ -112,11 +130,17 @@ def e_form(struct: Structure) -> float:
 
 if __name__ == '__main__':
     import pandas as pd
-    from tqdm import tqdm
+    from rich.progress import track, Progress, SpinnerColumn
     import torch
     df = pd.read_pickle('merged_test_data3.pkl')
     energies = []
 
     with torch.device('cpu'):
-        for i in tqdm(df.index[:20]):
-            energies.append(point_energy(df.loc[i, 'struct']))
+        subset = df.iloc[:40]
+        for i, row in track(subset.iterrows()):
+            energies.append(point_energy(row['struct']))
+
+        with Progress(SpinnerColumn(), speed_estimate_period=0) as progress:
+            energies2 = point_energies(subset['struct'])
+
+            assert np.allclose(energies, energies2)

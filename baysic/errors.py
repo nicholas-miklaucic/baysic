@@ -12,10 +12,10 @@ class BaysicError(Exception):
 class StructureGenerationError(BaysicError):
     """Base error class for failure to generate structures. If coordinates aren't 
     found, CoordinateGenerationFailed is raised instead."""
-    def __init__(self, comp: Composition, lattice_model: LatticeModel, group: Group, message):
+    def __init__(self, comp: Composition, lattice_model: LatticeModel, groups: list[Group], message):
         self.comp = comp
         self.lattice = lattice_model
-        self.group = group    
+        self.groups = groups  
         self.message = message
 
 class WyckoffAssignmentImpossible(StructureGenerationError):

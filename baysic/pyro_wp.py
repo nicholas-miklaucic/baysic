@@ -190,7 +190,7 @@ class WyckoffSet(torch.nn.Module):
                 
                 # sometimes the first position isn't the one in the ASU
                 # so search for one of those
-                x = gen_tau[0]
+                x = gen_tau[0] % 1
                 if (0 <= torch.round(self.x_trans.inv(x), decimals=2) <= 1): 
                     x = torch.ones_like(xyz[..., :1]) * x
                     if xyz.numel() == 0:
@@ -232,10 +232,30 @@ class WyckoffSet(torch.nn.Module):
 
 
 if __name__ == '__main__':
-    test_asu = False
+    test_asu = True
     test_all_pos = False
     test_inv = True
-    test_screw = False
+    test_screw = True
+    test_Immm = True
+
+    from rich.progress import track
+
+    if test_Immm:        
+        wps = Group('Immm').Wyckoff_positions
+        for wp in wps:
+            if wp.get_dof() == 0:
+                continue
+            ws = WyckoffSet('Immm', wp.letter)
+            zz = torch.cartesian_prod(*[
+                torch.linspace(0.01, 0.99, 10) for _ in range(wp.get_dof())
+            ]).reshape(10, -1)
+
+            posns = ws.to_asu(zz)
+            for i in range(len(posns)):
+                if not torch.allclose(ws.to_asu(ws.inverse(posns[[i]])), posns[i]):
+                    raise ValueError('Whoops')
+            all_posns = ws.to_all_positions(posns)
+        print('Immm success!')
 
     if test_screw:        
         ws = WyckoffSet(143, 'c')
@@ -248,10 +268,10 @@ if __name__ == '__main__':
             if not torch.allclose(ws.to_asu(ws.inverse(posns[[i]])), posns[i]):
                 raise ValueError('Whoops')
         all_posns = ws.to_all_positions(posns)
-
+        print('Screw success!')
 
     if test_inv:
-        for group in range(1, 231):
+        for group in track(range(1, 231), 'Testing inverses...'):
             wps = Group(group).Wyckoff_positions
             for wp in wps[:2] + wps[-2:]:
                 ws = WyckoffSet(group, wp.index)
@@ -273,7 +293,7 @@ if __name__ == '__main__':
         print('Inverses successful!')
 
     if test_all_pos:
-        for group in range(1, 231):            
+        for group in track(range(1, 231), 'Testing all positions...'):
             wps = Group(group).Wyckoff_positions
             for wp in wps[:2] + wps[-2:]:
                 ws = WyckoffSet(group, wp.index)
@@ -293,7 +313,7 @@ if __name__ == '__main__':
         print('Generating all positions successful!')
 
     if test_asu:
-        for group in range(1, 231):
+        for group in track(range(1, 231), 'Testing ASU...'):
             wp_index = 0
             if len(Group(group).Wyckoff_positions) > wp_index:
                 wp = WyckoffSet(group, wp_index)

@@ -215,5 +215,5 @@ class FeatureSpace:
             
 
 if __name__ == '__main__':
-    fs = FeatureSpace(216)
+    fs = FeatureSpace(71)
     print(fs.from_free_transformed_xyz(np.array([]), 'a'))

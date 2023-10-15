@@ -109,7 +109,7 @@ class WyckoffSelectionStrategy(Enum):
     # but it's included for backwards compatibility and testing.
     fewer_distinct = 'fewer_distinct'
     # Randomly sample, completely eschewing the number of generations. Try to weight towards fewer
-    # distinct Wyckoff combinations when doing so. This is much faster but still experimental.
+    # distinct Wyckoff combinations when doing so. This is *much* faster: definitely use it.
     sample_distinct = 'sample_distinct'
 
 
@@ -129,10 +129,10 @@ class SearchConfig:
     # increases computational load and RAM usage but makes finding difficult configurations more likely.
     n_grid: int = 12
 
-    # How to randomly choose Wyckoff position assignments. The default is strongly recommended: it's rare
-    # for a Wyckoff assignment to have a large number of distinct Wyckoff symbols, and the default weights
-    # those assignments to properly match the distribution found in sample materials.
-    wyckoff_strategy: WyckoffSelectionStrategy = WyckoffSelectionStrategy.fewer_distinct
+    # How to randomly choose Wyckoff position assignments. The default is strongly recommended: it's
+    # much, much faster, and it roughly matches the distribution of Wyckoff positions found in the real
+    # world.
+    wyckoff_strategy: WyckoffSelectionStrategy = WyckoffSelectionStrategy.sample_distinct
 
     # If True, overrides other parameters to create a barebones configuration that can be used to quickly iterate
     # on code and test that things work before trying a real run.
