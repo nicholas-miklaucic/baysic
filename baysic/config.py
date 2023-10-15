@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+from jax import Device
 import pyrallis
 from pymatgen.core import Composition, Structure, Lattice
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
@@ -165,7 +166,7 @@ class SearchConfig:
     # but the order Wyckoff positions are filled has a big impact on how quickly failed iterations take. (Ideally, we want
     # to fail quickly, so the idea is that bigger atoms are more likely to be impossible to fit in a lattice.) Otherwise,
     # orders by degrees of freedom.
-    order_positions_by_radius: bool = False
+    order_positions_by_radius: bool = True
 
     # The space groups to search. This should mainly be used for testing purposes: invalid groups are already factored out.
     # Takes precedence over smoke_test, which by default only tries the first two groups of each lattice system.
@@ -232,7 +233,14 @@ class CliConfig:
     verbosity: LoggingLevel = LoggingLevel.info
     # Whether to show progress bars.
     show_progress: bool = True
-        
+
+
+@dataclass
+class DeviceConfig:
+    """Configuration of computing power."""
+    # Torch device: probably should be either 'cpu' or 'cuda'.
+    device = 'cpu'
+    
 
 @dataclass
 class MainConfig:
@@ -241,6 +249,7 @@ class MainConfig:
     search: SearchConfig = field(default_factory=SearchConfig)
     target: TargetStructureConfig = field(default_factory=TargetStructureConfig)
     cli: CliConfig = field(default_factory=CliConfig)
+    device: DeviceConfig = field(default_factory=DeviceConfig)
 
 
 def to_dict(config) -> dict:

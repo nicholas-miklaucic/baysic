@@ -49,6 +49,8 @@ def main(conf: MainConfig):
     if conf.search.rng_seed is not None:
         torch.manual_seed(conf.search.rng_seed)
 
+    torch.set_default_device(conf.device.device)
+
     FORMAT = "%(message)s"
     logging.basicConfig(
         level=conf.cli.verbosity.value, format=FORMAT, datefmt="[%X]", 
