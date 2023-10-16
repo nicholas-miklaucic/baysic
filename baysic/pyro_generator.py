@@ -313,7 +313,8 @@ class SystemStructureModel(PyroModule):
     
     def to_structures(self) -> list[Structure]:
         np_coords = self.coords.detach().cpu().numpy()
-        return [Structure(self.lattice, self.elems, coords) for coords in np_coords]
+        lattice = self.lattice.detach().cpu().numpy()
+        return [Structure(lattice, self.elems, coords) for coords in np_coords]
     
     def to_gen_coords(self) -> torch.Tensor:
         """Gets just the free coordinates."""

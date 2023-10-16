@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-from jax import Device
 import pyrallis
 from pymatgen.core import Composition, Structure, Lattice
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
@@ -239,7 +238,7 @@ class CliConfig:
 class DeviceConfig:
     """Configuration of computing power."""
     # Torch device: probably should be either 'cpu' or 'cuda'.
-    device = 'cpu'
+    device: str = 'cpu'
     
 
 @dataclass

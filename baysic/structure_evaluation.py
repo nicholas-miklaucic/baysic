@@ -75,10 +75,10 @@ def is_structure_valid(struct: Structure) -> bool:
 chgnet = None
 relaxer = None
 
-def point_energy(struct: Structure) -> float:
+def point_energy(struct: Structure, device: str = "cpu") -> float:
     global chgnet
     if chgnet is None:
-        chgnet = CHGNet.load()
+        chgnet = CHGNet.load().to(device)
     
     prediction = chgnet.predict_structure(struct, task='e')
     if not is_structure_valid(struct):        
@@ -86,13 +86,13 @@ def point_energy(struct: Structure) -> float:
     else: 
         return prediction['e'].item()
     
-def point_energies(structs: list[Structure]) -> list[float]:
+def point_energies(structs: list[Structure], device: str = "cpu") -> list[float]:
     if len(structs) == 1:
-        return [point_energy(structs[0])]
+        return [point_energy(structs[0], device=device)]
     
     global chgnet
     if chgnet is None:
-        chgnet = CHGNet.load()
+        chgnet = CHGNet.load().to(device)
 
     predictions = chgnet.predict_structure(structs, task='e')
     preds = []

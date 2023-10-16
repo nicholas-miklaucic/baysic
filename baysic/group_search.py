@@ -158,7 +158,7 @@ def main(conf: MainConfig):
 
                     
                     new_structs = model.to_structures()[:conf.search.max_gens_at_once]                    
-                    e_form_vals = point_energies(new_structs)
+                    e_form_vals = point_energies(new_structs, conf.device.device)
                     for struct, e_form_val in zip(new_structs, e_form_vals):                        
                         if e_form_val > 80:
                             continue
