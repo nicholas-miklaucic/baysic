@@ -24,7 +24,7 @@ MIN_DIST_RATIO = 0.8
 VACUUM_SIZE = 7
 
 def is_structure_valid(struct: Structure) -> bool:
-    """Tests structure validity."""    
+    """Tests structure validity."""
     struct.make_supercell([2, 2, 2], to_unit_cell=False)
     radii = np.array([CovalentRadius.radius[site.specie.symbol] for site in struct.sites])
     # distance threshold
@@ -32,7 +32,7 @@ def is_structure_valid(struct: Structure) -> bool:
     rads = upper_tri(np.add.outer(radii, radii))
     if np.any(dists / rads <= MIN_DIST_RATIO):
         return False
-        
+
 
     def get_foot(p, a, b):
         p = np.array(p)
@@ -65,7 +65,7 @@ def is_structure_valid(struct: Structure) -> bool:
                 fp_distance = get_distance(foot_points[fp_i + 1], foot_points[fp_i])
                 if fp_distance > VACUUM_SIZE:
                     return False
-        
+
     return True
 
 # eform = matgl.load_model('matgl/pretrained_models/M3GNet-MP-2018.6.1-Eform/model.json')
@@ -79,17 +79,17 @@ def point_energy(struct: Structure, device: str = "cpu") -> float:
     global chgnet
     if chgnet is None:
         chgnet = CHGNet.load().to(device)
-    
+
     prediction = chgnet.predict_structure(struct, task='e')
-    if not is_structure_valid(struct):        
+    if not is_structure_valid(struct):
         return 100 + prediction['e'].item()
-    else: 
+    else:
         return prediction['e'].item()
-    
+
 def point_energies(structs: list[Structure], device: str = "cpu") -> list[float]:
     if len(structs) == 1:
         return [point_energy(structs[0], device=device)]
-    
+
     global chgnet
     if chgnet is None:
         chgnet = CHGNet.load().to(device)
@@ -97,9 +97,9 @@ def point_energies(structs: list[Structure], device: str = "cpu") -> list[float]
     predictions = chgnet.predict_structure(structs, task='e')
     preds = []
     for struct, pred in zip(structs, predictions):
-        if not is_structure_valid(struct):        
+        if not is_structure_valid(struct):
             preds.append(100 + pred['e'].item())
-        else: 
+        else:
             preds.append(pred['e'].item())
 
     return preds
@@ -109,10 +109,10 @@ def relaxed_energy(struct: Structure, long: bool = False) -> (Structure, float):
     if relaxer is None:
         relaxer = StructOptimizer()
     if long:
-        params = dict(fmax=0.01, steps=150)    
+        params = dict(fmax=0.01, steps=150)
     else:
         params = dict(fmax=0.02, steps=5)
-        
+
     relax_results = relaxer.relax(struct, **params)
     # extract results
     final_structure = relax_results["final_structure"]
@@ -121,12 +121,12 @@ def relaxed_energy(struct: Structure, long: bool = False) -> (Structure, float):
 
     return (final_structure, final_energy / final_structure.num_sites)
 
-def e_form(struct: Structure) -> float:    
+def e_form(struct: Structure) -> float:
     if not is_structure_valid(struct):
         return 100
     else:
         return relaxed_energy(struct)[1]
-    
+
 
 if __name__ == '__main__':
     import pandas as pd
