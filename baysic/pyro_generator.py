@@ -12,7 +12,7 @@ from pymatgen.core import Composition, Lattice, Structure, Element
 from pymatgen.analysis.molecule_structure_comparator import CovalentRadius
 from tqdm import trange
 from baysic.errors import CoordinateGenerationFailed, StructureGenerationError, WyckoffAssignmentFailed, WyckoffAssignmentImpossible
-from baysic.structure_evaluation import MIN_DIST_RATIO, point_energy
+from baysic.structure_evaluation import point_energy
 from baysic.pyro_wp import WyckoffSet
 from baysic.lattice import CubicLattice, OrthorhombicLattice, atomic_volume, LatticeModel
 from baysic.utils import debug_shapes, get_group, pairwise_dist_ratio, pairwise_diag_dist_ratio
@@ -20,9 +20,8 @@ from baysic.config import SearchConfig, WyckoffSelectionStrategy, LogConfig
 from pyxtal import Group
 from baysic.wp_assignment import WYCKOFFS
 
-
 class SystemStructureModel(PyroModule):
-    """A stochastic structure generator working within a particular lattice type."""    
+    """A stochastic structure generator working within a particular lattice type."""
     def __init__(self, log: LogConfig, config: SearchConfig, comp: Composition, lattice: LatticeModel, force_group: int | str | Group | None = None):
         """
         force_group: either a group symbol/number or None to use all potential groups.
@@ -33,14 +32,30 @@ class SystemStructureModel(PyroModule):
         self.comp = comp
         self.elements = self.comp.elements
         self.lattice_model = lattice
-                
-        # convert μ and σ to α and β        
-        u = config.lattice_scale_factor_mu
-        s = config.lattice_scale_factor_sigma
-        alpha = u ** 2 / s ** 2
-        beta = u / s ** 2
-        logging.debug(f'α = {alpha:.3f}, β = {beta:.3f}')
-        self.volume_ratio = PyroSample(dist.Gamma(alpha, beta))
+
+
+        self.needs_tight_ratio = any([e.symbol in ['Pu', 'U', 'Ce', 'Np', 'Pa'] for e in comp.elements])
+        # Pymatgen's CovalentRadius as a predictor of bond length becomes
+        # looser and looser as the atomic number increases. The trans-uranium
+        # elements, and to a lesser extent the lanthanides, can form bonds
+        # at a much closer distance. Because this is so rare, we special-case it,
+        # so the vast majority of crystals can use a tighter bound that will
+        # eliminate more bad crystals faster. This also lets us generate better
+        # lattices, because we can avoid generating lattices that are too small. Those
+        # tend to waste a lot of computational power.
+        if not self.needs_tight_ratio:
+            self.MIN_DIST_RATIO = 0.7
+            self.MIN_LATTICE_RATIO = 0.77
+            # μ = 1.01, σ = 0.83
+            self.volume_ratio = PyroSample(dist.LogNormal(loc=-0.252, scale=0.72))
+        else:
+            self.MIN_DIST_RATIO = 0.6
+            self.MIN_LATTICE_RATIO = 0.6
+            self.volume_ratio = PyroSample(dist.FoldedDistribution(
+            dist.SoftAsymmetricLaplace(
+                loc=0.548, scale=.211, asymmetry=0.672, softness=0.03
+            )))
+
         self.atom_volume = atomic_volume(comp)
 
         groups = self.lattice_model.get_groups()
@@ -53,10 +68,10 @@ class SystemStructureModel(PyroModule):
                     [force_group],
                     f'{force_group.symbol} is not compatible with the crystal system: {force_group.lattice_type} ≠ {self.lattice_model.lattice_type}'
                 )
-            
+
             groups = [force_group]
-            
-            
+
+
         self.group_options = []
         self.wyckoff_options = []
         self.group_cards = []
@@ -64,10 +79,10 @@ class SystemStructureModel(PyroModule):
         self.count_cards = []
         self.inds = []
 
-        n_els = np.array(list(comp.values()))        
-        strategy = self.config.wyckoff_strategy        
-        if strategy == WyckoffSelectionStrategy.sample_distinct:            
-            for sg in groups:                
+        n_els = np.array(list(comp.values()))
+        strategy = self.config.wyckoff_strategy
+        if strategy == WyckoffSelectionStrategy.sample_distinct:
+            for sg in groups:
                 if WYCKOFFS[sg.number].can_make(self.comp):
                     self.group_options.append(sg)
 
@@ -78,9 +93,9 @@ class SystemStructureModel(PyroModule):
                     groups,
                     'No possible Wyckoff assignments'
                 )
-            
+
             self.group_opt = PyroSample(dist.Categorical(logits=torch.zeros(len(self.group_options))))
-                    
+
             self.log_info = {
                 'num_assignments': 0
             }
@@ -91,7 +106,7 @@ class SystemStructureModel(PyroModule):
                     self.group_options.extend([sg.number] * len(combs))
                     self.wyckoff_options.extend(combs)
                     self.group_cards.extend([1 / len(combs)] * len(combs))
-                    self.opt_cards.extend([1] * len(combs)) 
+                    self.opt_cards.extend([1] * len(combs))
                     self.count_cards.extend([len(sum(comb, [])) + 1 for comb in combs])
 
             if len(self.wyckoff_options) == 0:
@@ -101,12 +116,12 @@ class SystemStructureModel(PyroModule):
                     groups,
                     'No possible Wyckoff assignments')
 
-            strategy = self.config.wyckoff_strategy        
+            strategy = self.config.wyckoff_strategy
             if strategy == WyckoffSelectionStrategy.uniform_sg:
                 probs = torch.tensor(self.group_cards).float()
             elif strategy == WyckoffSelectionStrategy.uniform_wp:
                 probs = torch.tensor(self.opt_cards).float()
-            elif strategy == WyckoffSelectionStrategy.fewer_distinct:            
+            elif strategy == WyckoffSelectionStrategy.fewer_distinct:
                 probs = torch.tensor(self.count_cards).float()
                 probs = 0.2 ** (probs - min(probs))
             elif strategy == WyckoffSelectionStrategy.weighted_wp_count:
@@ -117,28 +132,28 @@ class SystemStructureModel(PyroModule):
                     probs[probs == value] = weight / freq
             else:
                 raise ValueError(f'Could not interpret {strategy}')
-            
+
             self.probs = probs / probs.sum().float()
-            self.wyck_opt = PyroSample(dist.Categorical(probs=self.probs))      
+            self.wyck_opt = PyroSample(dist.Categorical(probs=self.probs))
             self.log_info = {
-                'num_assignments': len(combs)            
+                'num_assignments': len(combs)
             }
-                
-        
-    def forward(self):        
-        self.volume = self.volume_ratio * self.atom_volume
-        self.lattice = self.lattice_model(self.volume)()        
-        
-        strategy = self.config.wyckoff_strategy        
-        if strategy == WyckoffSelectionStrategy.sample_distinct:  
-            group = self.group_options[self.group_opt]            
-            num_atoms = list(self.comp.values())            
-            all_wps = group.Wyckoff_positions                            
+
+
+    def forward(self):
+        self.volume = (self.volume_ratio + self.MIN_LATTICE_RATIO) * self.atom_volume
+        self.lattice = self.lattice_model(self.volume)()
+
+        strategy = self.config.wyckoff_strategy
+        if strategy == WyckoffSelectionStrategy.sample_distinct:
+            group = self.group_options[self.group_opt]
+            num_atoms = list(self.comp.values())
+            all_wps = group.Wyckoff_positions
             mults = torch.tensor([wp.multiplicity for wp in all_wps]).float()
-            has_freedom = torch.tensor([wp.get_dof() != 0 for wp in all_wps])            
+            has_freedom = torch.tensor([wp.get_dof() != 0 for wp in all_wps])
             def try_assignment():
                 complete_assignment = []
-                for count in num_atoms:    
+                for count in num_atoms:
                     removed = torch.zeros_like(has_freedom)
                     assignment = []
                     curr_count = count
@@ -150,15 +165,15 @@ class SystemStructureModel(PyroModule):
                         _uniq, inv, counts = torch.unique(mults[is_possible], return_inverse=True, return_counts=True)
                         weights /= counts[inv]
                         weights /= weights.sum()
-                        selection = is_possible[dist.Categorical(probs=weights).sample()].item()        
+                        selection = is_possible[dist.Categorical(probs=weights).sample()].item()
                         assignment.append(all_wps[selection].letter)
                         curr_count -= mults[selection].item()
                         if not has_freedom[selection]:
-                            removed[selection] = True                            
+                            removed[selection] = True
 
                     complete_assignment.append(assignment)
                 return complete_assignment
-            
+
             tries = 0
             comb = None
             while tries < 100 and comb is None:
@@ -167,7 +182,7 @@ class SystemStructureModel(PyroModule):
 
             self.log_info['num_assignments'] = -tries
             if comb is None:
-                # note the difference from WyckoffAssignmentImpossible: this should 
+                # note the difference from WyckoffAssignmentImpossible: this should
                 # (hopefully) never happen and is a problem with the model
                 raise WyckoffAssignmentFailed(
                     self.comp,
@@ -177,13 +192,13 @@ class SystemStructureModel(PyroModule):
 
             self.sg = group.number
         else:
-            opt = self.wyck_opt        
+            opt = self.wyck_opt
             self.sg = self.group_options[opt]
             comb = self.wyckoff_options[opt]
-                
+
         self.coords = torch.tensor([])
         self.elems = []
-        self.wsets = []        
+        self.wsets = []
         spots = sum(comb, [])
         elements = sum([[elem] * len(spots) for elem, spots in zip(self.comp.elements, comb)], [])
         wsets: list[WyckoffSet] = [WyckoffSet(self.sg, spot) for spot in spots]
@@ -191,7 +206,7 @@ class SystemStructureModel(PyroModule):
         # WPs with 0 degrees of freedom should go first, because they're very cheap to expand out
         # then, letting the high-multiplicity elements go first is best
         # they're the toughest to place, and thus make the best use of parallelism
-        
+
         mults = np.array([wset.multiplicity for wset in wsets])
         mult_order = np.argsort(-mults)
         no_dofs = mult_order[dofs[mult_order] == 0]
@@ -208,7 +223,7 @@ class SystemStructureModel(PyroModule):
 
         self.log_info['volume_ratio'] = (self.volume / self.atom_volume).item()
         self.log_info['volume'] = self.volume.item()
-        self.log_info['wyckoff_letters'] = '_'.join([wset.wp.letter for wset in wsets[np.argsort(best_order)]])        
+        self.log_info['wyckoff_letters'] = '_'.join([wset.wp.letter for wset in wsets[np.argsort(best_order)]])
         self.log_info['total_dof'] = sum(dofs)
         self.log_info['group_num'] = self.sg
         self.log_info['num_total_coords'] = []
@@ -216,7 +231,7 @@ class SystemStructureModel(PyroModule):
         self.log_info['num_outputs'] = 0
         self.log_info['num_distance_checks'] = 0
 
-        for spot, elem, wset in zip(spots, elements, wsets):            
+        for spot, elem, wset in zip(spots, elements, wsets):
             radius = torch.tensor([CovalentRadius.radius[elem.symbol]])
 
             wset = WyckoffSet(self.sg, spot)
@@ -231,9 +246,9 @@ class SystemStructureModel(PyroModule):
                 low = base - max_move
                 high = base + max_move
                 posns = pyro.sample(f'coords_{len(self.elems)}', dist.Uniform(low, high))
-            
+
                 set_coords = wset.to_all_positions(wset.to_asu(posns))
-                
+
             debug_shapes('set_coords', 'posns')
             if set_coords.shape[-2] > 1:
                 # check pairwise distances
@@ -246,76 +261,76 @@ class SystemStructureModel(PyroModule):
                 # n_new_coords = set_diffs.shape[0]
                 # set_diffs = torch.diag(set_diffs)
                 # set_diffs = set_diffs[torch.arange(n_new_coords), 0, torch.arange(n_new_coords), :].reshape(-1, set_diffs.shape[-1])
-                # [ngrid, dof - 1]                
-                set_valid = set_diffs >= MIN_DIST_RATIO
+                # [ngrid, dof - 1]
+                set_valid = set_diffs >= self.MIN_DIST_RATIO
                 debug_shapes('set_valid')
             else:
                 # 1 coordinate is always valid
                 set_valid = torch.Tensor([1])
-        
+
             if not set_valid.any():
                 raise CoordinateGenerationFailed(self.log_info, 'No structures found with acceptable inter-atomic distances')
-            
+
             debug_shapes('set_coords', 'set_valid')
             good_all_coords = set_coords[torch.where(set_valid)[0], :, :]
             # only need to check base coord
-            good_coords = good_all_coords[:, :1, :]            
-            
+            good_coords = good_all_coords[:, :1, :]
+
             if self.coords.numel():
                 radii = torch.tensor([CovalentRadius.radius[el.symbol] for el in self.elems])
-                coords = self.coords                                          
+                coords = self.coords
                 # print(self.elems, self.wsets, wset.multiplicity)
                 self.log_info['num_distance_checks'] += coords.shape[0] * good_coords.shape[0] * coords.shape[1] * good_coords.shape[1]
-                
+
                 # shape [coords_batch, coords_num, good_batch, good_num]
-                # shape [coords_batch, good_batch]            
+                # shape [coords_batch, good_batch]
 
                 min_cdists = pairwise_dist_ratio(good_coords, coords, radius, radii, self.lattice)
                 debug_shapes('good_coords', 'coords', 'radius', 'radii', 'min_cdists')
-                # min_cdists = cdists.permute((0, 2, 1, 3)).min(dim=-1)[0].min(dim=-1)[0]                                
+                # min_cdists = cdists.permute((0, 2, 1, 3)).min(dim=-1)[0].min(dim=-1)[0]
 
-                good_batch, coord_batch = min_cdists.shape                
+                good_batch, coord_batch = min_cdists.shape
                 min_cdists = min_cdists.flatten()
                 k = min(min_cdists.numel(), self.config.n_parallel_structs)
                 dists, inds = torch.topk(min_cdists, k, largest=False, sorted=False)
-                inds = inds[dists >= MIN_DIST_RATIO]
-                dists = dists[dists >= MIN_DIST_RATIO]
+                inds = inds[dists >= self.MIN_DIST_RATIO]
+                dists = dists[dists >= self.MIN_DIST_RATIO]
                 if inds.numel() == 0:
                     raise CoordinateGenerationFailed(
-                        self.log_info, 
+                        self.log_info,
                         'No structures found with acceptable inter-atomic distances'
                     )
 
                 # convert flat index i to original good_batch, coord_batch
                 all_new = inds // coord_batch
                 all_old = inds % coord_batch
-                
-                self.log_info['num_total_coords'].append(all_new.numel())                
+
+                self.log_info['num_total_coords'].append(all_new.numel())
 
                 old = self.coords[all_old]
                 new = good_all_coords[all_new]
                 debug_shapes('old', 'new')
-                self.coords = torch.cat([old, new], dim=1)                
+                self.coords = torch.cat([old, new], dim=1)
                 # self.coords.append(set_coords[torch.where(set_valid)[0][0]].unsqueeze(0))
 
             else:
                 # no other coordinates to worry about, just add all found coordinates
                 self.log_info['num_total_coords'].append(good_all_coords.shape[0])
                 self.coords = good_all_coords
-                            
+
             self.log_info['num_filtered_coords'].append(self.coords.shape[0])
             self.elems.extend([elem] * wset.multiplicity)
             self.wsets.append(wset)
-                        
+
 
         self.log_info['num_outputs'] = self.coords.shape[0]
         return (self.coords, self.lattice, self.elems, self.wsets, self.sg)
-    
+
     def to_structures(self) -> list[Structure]:
         np_coords = self.coords.detach().cpu().numpy()
         lattice = self.lattice.detach().cpu().numpy()
         return [Structure(lattice, self.elems, coords) for coords in np_coords]
-    
+
     def to_gen_coords(self) -> torch.Tensor:
         """Gets just the free coordinates."""
         curr_i = 0
@@ -331,14 +346,14 @@ class SystemStructureModel(PyroModule):
         return torch.cat(coords, dim=-1)
 
 
-    
+
 
 if __name__ == '__main__':
     from rich.console import Console
     from rich.markdown import Markdown
     from rich.progress import track
     from rich.logging import RichHandler
-    console = Console()    
+    console = Console()
     # logging.basicConfig(
     #     level="INFO", format='%(message)s', datefmt="[%X]", handlers=[RichHandler()]
     # )
@@ -347,7 +362,7 @@ if __name__ == '__main__':
         SearchConfig(order_positions_by_radius=False, wyckoff_strategy=WyckoffSelectionStrategy.sample_distinct,
                      rng_seed=1234),
         Composition({'Mg': 8, 'Al': 16, 'O': 32}),
-        # Composition.from_dict({'K': 8, 'Li': 4, 'Cr': 4, 'F': 24}),        
+        # Composition.from_dict({'K': 8, 'Li': 4, 'Cr': 4, 'F': 24}),
         # Composition('Ce2B2Rh6'),
         CubicLattice,
         force_group=227
@@ -357,7 +372,7 @@ if __name__ == '__main__':
     for _ in track(range(100)):
         try:
             coords, lat, elems, wsets, sg = mod.forward()
-            new_structs = mod.to_structures()            
+            new_structs = mod.to_structures()
         except CoordinateGenerationFailed as e:
             # console.print(e)
             pass

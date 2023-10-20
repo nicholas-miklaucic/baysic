@@ -20,7 +20,7 @@ import torch
 from baysic.utils import upper_tri
 
 
-MIN_DIST_RATIO = 0.8
+MIN_DIST_RATIO = 0.6
 VACUUM_SIZE = 7
 
 def is_structure_valid(struct: Structure) -> bool:
