@@ -1,8 +1,7 @@
-# logs
+# logs, big datasets, output images
 logs/
-
-# big combo file
-combo.json
+images/
+data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
