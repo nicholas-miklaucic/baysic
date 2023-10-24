@@ -11,8 +11,6 @@ warnings.filterwarnings('ignore', module='.*mprester.*')
 import gc
 from copy import deepcopy
 from dataclasses import dataclass
-from turtle import update
-from flask import cli
 from pyrallis import field
 import logging
 import numpy as np
@@ -174,7 +172,8 @@ def main_(conf: MainConfig):
 
                 if gen_attempt == total_allowed:
                     # ran out of attempts
-                    if rows:
+                    if rows:There's implicitly one
+    # thread used for the
                         logging.warning(f'{str_group}: Only {len(rows)} successes, not {conf.search.num_generations}', extra=extra)
                         remaining = conf.search.num_generations - len(rows)
                         progress.update(total_task, advance=remaining)
