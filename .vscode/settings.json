@@ -7,6 +7,6 @@
     "notebook.output.lineHeight": 12,
     "notebook.scrolling.revealNextCellOnExecute": "firstLine",
     "evenBetterToml.formatter.reorderKeys": true,
-    "notebook.output.fontFamily": "'SF Mono'",
+    "notebook.output.fontFamily": "",
     "notebook.output.wordWrap": true
 }

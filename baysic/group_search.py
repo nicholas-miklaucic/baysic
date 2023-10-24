@@ -42,7 +42,7 @@ import rich.progress as prog
 # https://next-gen.materialsproject.org/materials/mp-2554
 # https://next-gen.materialsproject.org/materials/mp-10408
 
-def _main(conf: MainConfig):
+def main_(conf: MainConfig):
     """Runs a search to generate structures for a specific composition."""
 
     if conf.search.rng_seed is not None:
@@ -207,7 +207,7 @@ def _main(conf: MainConfig):
 @pyrallis.wrap()
 def main(main: MainConfig):
     """Searches for structures."""
-    _main(main)
+    main_(main)
 
 if __name__ == '__main__':
     from baysic.config import TargetStructureConfig, MainConfig

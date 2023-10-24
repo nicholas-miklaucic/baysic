@@ -136,7 +136,7 @@ def e_forms(structs: Structure, *args, **kwargs) -> list[float]:
         else:
             invalid_structs.append(struct)
 
-    energies = np.ones(len(struct)) * 100
+    energies = np.ones(len(structs)) * 100
     energies[valid_is] = point_energies(valid_structs, *args, **kwargs)
     return energies
 
