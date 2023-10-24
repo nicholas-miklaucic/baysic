@@ -126,18 +126,24 @@ def e_forms(structs: Structure, *args, **kwargs) -> list[float]:
     if isinstance(structs, Structure):
         structs = [structs]
 
-    invalid_structs = []
-    valid_structs = []
-    valid_is = []
-    for i, struct in enumerate(structs):
-        if is_structure_valid(struct):
-            valid_structs.append(struct)
-            valid_is.append(i)
-        else:
-            invalid_structs.append(struct)
+    # invalid_structs = []
+    # valid_structs = []
+    # valid_is = []
+    # for i, struct in enumerate(structs):
+    #     if is_structure_valid(struct):
+    #         valid_structs.append(struct)
+    #         valid_is.append(i)
+    #     else:
+    #         invalid_structs.append(struct)
 
-    energies = np.ones(len(structs)) * 100
-    energies[valid_is] = point_energies(valid_structs, *args, **kwargs)
+    # energies = np.ones(len(structs)) * 100
+    # energies[valid_is] = point_energies(valid_structs, *args, **kwargs)
+    energies = []
+    for struct in structs:
+        try:
+            energies.append(point_energy(struct, *args, **kwargs))
+        except ValueError as e:
+            energies.append(100)
     return energies
 
 
@@ -155,5 +161,4 @@ if __name__ == '__main__':
 
         with Progress(SpinnerColumn(), speed_estimate_period=0) as progress:
             energies2 = point_energies(subset['struct'])
-
             assert np.allclose(energies, energies2)

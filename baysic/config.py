@@ -52,7 +52,6 @@ class TargetStructureConfig:
         """The space group symbol, e.g., Pm-3m."""
         return self.sga.get_space_group_symbol()
 
-
     @property
     def sg_number(self) -> int:
         """The space group number, e.g., 225."""
@@ -228,6 +227,9 @@ class DeviceConfig:
     """Configuration of computing power."""
     # Torch device: probably should be either 'cpu' or 'cuda'.
     device: str = 'cpu'
+
+    # Number of threads, if using CPU.
+    threads: int = 1
 
 
 @dataclass

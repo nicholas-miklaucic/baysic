@@ -44,11 +44,10 @@ import rich.progress as prog
 
 def main_(conf: MainConfig):
     """Runs a search to generate structures for a specific composition."""
-
+    torch.set_default_device(conf.device.device)
+    torch.set_num_threads(conf.device.threads)
     if conf.search.rng_seed is not None:
         torch.manual_seed(conf.search.rng_seed)
-
-    torch.set_default_device(conf.device.device)
 
     FORMAT = "%(message)s"
     logging.basicConfig(
@@ -197,8 +196,9 @@ def main_(conf: MainConfig):
                 if conf.log.use_directory:
                     df_to_json(group_df, run_dir / Path(f'{group.number}.json'))
 
-    big_df = pd.concat(big_df).reset_index(drop=True)
+
     if conf.log.use_directory:
+        big_df = pd.concat(big_df).reset_index(drop=True)
         df_to_json(big_df, run_dir / Path(f'total.json'))
 
     print('Complete!')
@@ -210,5 +210,6 @@ def main(main: MainConfig):
     main_(main)
 
 if __name__ == '__main__':
-    from baysic.config import TargetStructureConfig, MainConfig
-    _main(MainConfig(target=TargetStructureConfig('mp-20674')))
+    main()
+    # from baysic.config import TargetStructureConfig, MainConfig
+    # main_(MainConfig(target=TargetStructureConfig('mp-20674')))
