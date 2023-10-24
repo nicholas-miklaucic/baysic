@@ -197,7 +197,7 @@ def main_(conf: MainConfig):
                     df_to_json(group_df, run_dir / Path(f'{group.number}.json'))
 
 
-    if conf.log.use_directory:
+    if conf.log.use_directory and conf.log.make_total_file:
         big_df = pd.concat(big_df).reset_index(drop=True)
         df_to_json(big_df, run_dir / Path(f'total.json'))
 

@@ -192,6 +192,10 @@ class LogConfig:
     # Whether to log outputs to a directory.
     use_directory: bool = True
 
+    # Whether to create a file containing all generated structures. This
+    # uses a lot more disk space but saves some postprocessing.
+    make_total_file: bool = False
+
     # The log directory to use.
     log_directory: Path = Path('logs/')
 
