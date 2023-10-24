@@ -5,7 +5,8 @@ from math import e
 from turtle import circle
 import numpy as np
 from pymatgen.core import SymmOp, Lattice
-
+from pyxtal import Wyckoff_position
+from pymatgen.analysis.molecule_structure_comparator import CovalentRadius
 from baysic.utils import json_to_df
 
 def is_nonzero(arr, **kwargs):
@@ -20,10 +21,23 @@ class WyckoffSpan:
         if len(self.free_vars) != self.dim:
             raise ValueError(f'{op} is not a line, len({self.free_vars}) != 1')
 
-    def fits(self, lattice: Lattice, radii: np.array) -> bool:
-        """Computes whether the given atomic radii can fit."""
+    def dist_ratio(self, lattice: Lattice, radii: np.array) -> float:
+        """Computes the maximum dist_ratio needed to make the atoms fit. Returns
+        np.inf if all assignments work, and 0 if no assignments work."""
         raise NotImplementedError()
 
+    def __le__(self, other):
+        if self.dim > other.dim:
+            return False
+        elif self.dim == other.dim:
+            return self == other
+        else:
+            test_params = np.random.randn(10, self.dim)
+            test_pts = np.array([
+                self(*params) for params in test_params
+            ])
+
+            return all([other.contains(test_pt) for test_pt in test_pts])
 
 class Point(WyckoffSpan):
     """A 0D Wyckoff span."""
@@ -32,14 +46,20 @@ class Point(WyckoffSpan):
         super().__init__(op)
         self.point = op.translation_vector % 1
 
-    def fits(self, lattice: Lattice, radii: np.array) -> bool:
-        return len(radii) <= 1
+    def dist_ratio(self, lattice: Lattice, radii: np.array) -> float:
+        return np.inf if len(radii) <= 1 else 0
 
     def __eq__(self, other):
         return np.allclose(self.point, other.point)
 
     def __repr__(self):
         return f'{self.point}'
+
+    def contains(self, pt):
+        return np.allclose(self.point, pt)
+
+    def __call__(self):
+        return self.point
 
 class Line(WyckoffSpan):
     """A 1D Wyckoff span."""
@@ -103,10 +123,15 @@ class Line(WyckoffSpan):
         """A vector representing the segment in fractional space."""
         return self.p * (self.t_max - self.t_min)
 
-    def fits(self, lattice: Lattice, radii: np.array) -> bool:
+    def dist_ratio(self, lattice: Lattice, radii: np.array) -> float:
         line_len = np.linalg.norm(self.vec @ lattice.matrix)
         # diameters have to be less than the total length
-        return np.sum(2 * radii) <= line_len
+        return line_len / np.sum(2 * radii)
+
+    def contains(self, pt):
+        if np.allclose(pt, self.tau):
+            return True
+        return abs(np.dot((pt - self.tau), self.p)) / np.linalg.norm(pt - self.tau) == 1
 
 
 class Plane(WyckoffSpan):
@@ -164,10 +189,17 @@ class Plane(WyckoffSpan):
         # centroid can be used to easily compare planes
         self.centroid = self.corners.mean(axis=0)
         self.normal = n
+        self.M = M
 
     def __eq__(self, other):
         # this will break with __hash__: we're going to ignore that
         return np.allclose(self.centroid, other.centroid) and np.isclose(abs(np.dot(self.normal, other.normal)), 1)
+
+    def __call__(self, u, v):
+        return self.M @ np.array([u, v]) + self.centroid
+
+    def contains(self, pt):
+        return np.allclose(np.dot(self.normal, (pt - self.centroid)), 0)
 
     def __repr__(self):
         return "(\u27e8x, y, z\u27e9 - \u27e8{}, {}, {}\u27e9) \u22c5 \u27e8{}, {}, {}\u27e9 = 0".format(
@@ -197,7 +229,7 @@ class Plane(WyckoffSpan):
         return 4 * np.sqrt(np.prod(s - np.array([a_o, b_o, a_b])) * s)
 
 
-    def fits(self, lattice: Lattice, radii: np.array) -> float:
+    def dist_ratio(self, lattice: Lattice, radii: np.array) -> float:
         # the atom centers can be anywhere on the span, but the radii have to
         # fit within it: otherwise there would be an overlap between unit cells
 
@@ -230,7 +262,37 @@ class Plane(WyckoffSpan):
             np.sum(circle_areas)
         )
 
-        return plane_area > min_needed_area
+        return np.sqrt(plane_area / min_needed_area)
+
+
+def min_dist_ratio(sg_num, wps, species, lattice: Lattice) -> float:
+    spans = []
+    span_elements = []
+
+    for specie, wp in zip(species, wps):
+        if wp.get_dof() != 3:
+            radius = CovalentRadius.radius[specie.symbol]
+            for op in wp.ops:
+                n_dof = sum(is_nonzero(op.rotation_matrix, axis=0))
+                span = (Point, Line, Plane)[n_dof](op)
+                did_add = False
+                for span_i, prev_span in enumerate(spans):
+                    if span <= prev_span:
+                        if span.dim == prev_span.dim:
+                            # already tracking this span
+                            did_add = True
+                        span_elements[span_i].append(specie)
+
+                if not did_add:
+                    spans.append(span)
+                    span_elements.append([specie])
+
+    dist_ratios = []
+    for span, species in zip(spans, span_elements):
+        radii = [CovalentRadius.radius[specie.symbol] for specie in species]
+        dist_ratios.append(span.dist_ratio(lattice, radii))
+
+    return np.min(dist_ratios) if dist_ratios else np.inf
 
 
 if __name__ == '__main__':
@@ -260,12 +322,19 @@ if __name__ == '__main__':
         materials = load_mp20('train')
 
         dist_ratios = []
-        for row_i in track(range(0, len(materials.index), 100)):
+        elements = []
+        radiis = []
+        span_dims = []
+        for row_i in track(range(0, len(materials.index), 113)):
             row = materials.iloc[row_i]
-            spans = []
-            span_radii = []
+            if row['sg_symbol'] != row['sg'].symbol:
+                # tolerance mismatch, continue
+                continue
 
-            symm = row['struct']
+            spans = []
+            span_elements = []
+
+            symm = row['conv']
             sg_num = row['sg_number']
             species = symm.species
             i = 0
@@ -283,29 +352,35 @@ if __name__ == '__main__':
                         span = (Point, Line, Plane)[n_dof](op)
                         did_add = False
                         for span_i, prev_span in enumerate(spans):
-                            if span.dim == prev_span.dim and span == prev_span:
-                                span_radii[span_i].append(radius)
-                                did_add = True
-                                break
+                            if span <= prev_span:
+                                if span.dim == prev_span.dim:
+                                    did_add = True
+                                span_elements[span_i].append(specie)
+
                         if not did_add:
                             spans.append(span)
-                            span_radii.append([radius])
+                            span_elements.append([specie])
 
-            for span, radii in zip(spans, span_radii):
-                min_dist_ratios = np.linspace(0.6, 1, 30)
-                assert span.fits(row['conv'].lattice, np.array(radii) * min_dist_ratios[0])
-                prev_min = min_dist_ratios[0]
-                for curr_min in min_dist_ratios[1:]:
-                    if not span.fits(row['conv'].lattice, np.array(radii) * curr_min):
-                        dist_ratios.append(prev_min)
-                        break
-                    else:
-                        prev_min = curr_min
+            for span, species in zip(spans, span_elements):
+                radii = [CovalentRadius.radius[specie.symbol] for specie in species]
+                radiis.append(radii)
+                elements.append(species)
+                span_dims.append(span.dim)
+                dist_ratios.append(span.dist_ratio(symm.lattice, radii))
 
-                if prev_min == 1:
-                    dist_ratios.append(prev_min)
 
         dist_ratios = np.array(dist_ratios)
-        print(np.quantile(dist_ratios, np.linspace(0, 1, 11)).round(4))
+        span_dims = np.array(span_dims)
+        has_special_elements = np.array([
+            any([e.symbol in ['Pu', 'U', 'Ce', 'Np', 'Pa'] for e in comp])
+        for comp in elements])
+
+        for dim in (0, 1, 2):
+            print(dim)
+            for arr in (
+                dist_ratios[(~has_special_elements) & (span_dims == dim)],
+                dist_ratios[(has_special_elements) & (span_dims == dim)]):
+                if len(arr):
+                    print(np.quantile(arr, np.linspace(0, 1, 11)).round(4))
 
     print('Success!')

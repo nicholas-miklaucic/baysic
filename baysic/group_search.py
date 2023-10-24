@@ -26,7 +26,7 @@ from datetime import datetime
 import pandas as pd
 from tqdm import tqdm, trange
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from baysic.structure_evaluation import e_form, point_energies, point_energy, relaxed_energy
+from baysic.structure_evaluation import e_forms, point_energies, point_energy, relaxed_energy
 from pymatgen.core import Composition, Structure, Lattice
 import pandas as pd
 import pyrallis
@@ -42,8 +42,7 @@ import rich.progress as prog
 # https://next-gen.materialsproject.org/materials/mp-2554
 # https://next-gen.materialsproject.org/materials/mp-10408
 
-@pyrallis.wrap()
-def main(conf: MainConfig):
+def _main(conf: MainConfig):
     """Runs a search to generate structures for a specific composition."""
 
     if conf.search.rng_seed is not None:
@@ -53,12 +52,12 @@ def main(conf: MainConfig):
 
     FORMAT = "%(message)s"
     logging.basicConfig(
-        level=conf.cli.verbosity.value, format=FORMAT, datefmt="[%X]", 
+        level=conf.cli.verbosity.value, format=FORMAT, datefmt="[%X]",
         handlers=[RichHandler(
             rich_tracebacks=True,
             show_time = False,
             show_level = False,
-            show_path = False,            
+            show_path = False,
         )]
     )
 
@@ -74,22 +73,22 @@ def main(conf: MainConfig):
             run_num += 1
             if run_num >= 100:
                 raise ValueError('You sure you want to make 100 folders for a day?')
-            
+
         run_dir = date_dir / str(run_num)
         run_dir.mkdir(exist_ok=True)
-    
+
     big_df = []
     with Progress(
         prog.TextColumn('[progress.description]{task.description}'),
-        prog.BarColumn(80, 
-                       'light_pink3', 
+        prog.BarColumn(80,
+                       'light_pink3',
                        'deep_sky_blue4',
                        'green'),
         prog.MofNCompleteColumn(),
         prog.TimeElapsedColumn(),
         prog.TimeRemainingColumn(),
         prog.SpinnerColumn(),
-        refresh_per_second=3,     
+        refresh_per_second=3,
         disable=not conf.cli.show_progress) as progress:
         total = 0
         lat_groups = {}
@@ -105,14 +104,14 @@ def main(conf: MainConfig):
             lat_groups[lattice_type.lattice_type] = groups
             total += len(groups) * conf.search.num_generations
 
-        
-        total_task = progress.add_task(f'[bold] {conf.target.formula} Generation [/bold]', total=total)
-        
+
+        total_task = progress.add_task(f'[bold] [deep_pink3] {conf.target.formula} [/deep_pink3] Generation [/bold]', total=total)
+
         for lattice_type in LATTICES:
-            groups = lat_groups[lattice_type.lattice_type]            
+            groups = lat_groups[lattice_type.lattice_type]
 
             lattice_total = len(groups) * conf.search.num_generations
-            lattice_task = progress.add_task(lattice_type.lattice_type.title(), 
+            lattice_task = progress.add_task(lattice_type.lattice_type.title(),
                                              total=lattice_total)
             for group in groups:
                 str_group = f'[sky_blue3] [bold] {group.number} [/bold] [italic] ({group.symbol}) [/italic] [/sky_blue3]'
@@ -128,9 +127,9 @@ def main(conf: MainConfig):
                 except WyckoffAssignmentImpossible as e:
                     logging.info(f'No valid Wyckoff assignments for {str_group}', extra=extra)
                     for task in (total_task, lattice_task):
-                        progress.update(task, advance=conf.search.num_generations)                    
+                        progress.update(task, advance=conf.search.num_generations)
                     continue
-                
+
                 rows = []
                 group_task = progress.add_task(str_group, total=conf.search.num_generations)
                 total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
@@ -152,41 +151,39 @@ def main(conf: MainConfig):
                     except AttributeError as e:
                         logging.error(f'AttributeError for {str_group}', extra=extra)
                         logging.error(e)
-                        continue    
+                        continue
 
 
-
-                    
-                    new_structs = model.to_structures()[:conf.search.max_gens_at_once]                    
-                    e_form_vals = point_energies(new_structs, conf.device.device)
-                    for struct, e_form_val in zip(new_structs, e_form_vals):                        
+                    new_structs = model.to_structures()[:conf.search.max_gens_at_once]
+                    e_form_vals = e_forms(new_structs, conf.device.device)
+                    for struct, e_form_val in zip(new_structs, e_form_vals):
                         if e_form_val > 80:
                             continue
 
                         for task in (total_task, lattice_task, group_task):
                             progress.update(task, advance=1)
-                        
+
                         row = {
                             'struct': struct,
                             'e_form': e_form_val,
                             'lat_matrix': lattice.detach().cpu().numpy(),
-                            'gen_attempt': gen_attempt,                            
+                            'gen_attempt': gen_attempt,
                         }
                         row.update(log_info)
-                        rows.append(row)                    
+                        rows.append(row)
 
-                
+
                 if gen_attempt == total_allowed:
-                    # ran out of attempts                    
+                    # ran out of attempts
                     if rows:
                         logging.warning(f'{str_group}: Only {len(rows)} successes, not {conf.search.num_generations}', extra=extra)
                         remaining = conf.search.num_generations - len(rows)
                         progress.update(total_task, advance=remaining)
                         progress.update(lattice_task, advance=remaining)
-                    
+
                     else:
-                        logging.info(f'{str_group}: Generation failed', extra=extra)                    
-                    
+                        logging.info(f'{str_group}: Generation failed', extra=extra)
+
                     progress.update(group_task, completed=True)
                     continue
 
@@ -199,13 +196,19 @@ def main(conf: MainConfig):
 
                 if conf.log.use_directory:
                     df_to_json(group_df, run_dir / Path(f'{group.number}.json'))
-        
+
     big_df = pd.concat(big_df).reset_index(drop=True)
     if conf.log.use_directory:
-        df_to_json(big_df, run_dir / Path(f'total.json')) 
-        
+        df_to_json(big_df, run_dir / Path(f'total.json'))
+
     print('Complete!')
 
 
+@pyrallis.wrap()
+def main(main: MainConfig):
+    """Searches for structures."""
+    _main(main)
+
 if __name__ == '__main__':
-    main()
+    from baysic.config import TargetStructureConfig, MainConfig
+    _main(MainConfig(target=TargetStructureConfig('mp-20674')))

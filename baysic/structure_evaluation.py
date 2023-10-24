@@ -25,7 +25,8 @@ VACUUM_SIZE = 7
 
 def is_structure_valid(struct: Structure) -> bool:
     """Tests structure validity."""
-    struct.make_supercell([2, 2, 2], to_unit_cell=False)
+    s = struct.copy()
+    struct.make_supercell([1, 1, 1])
     radii = np.array([CovalentRadius.radius[site.specie.symbol] for site in struct.sites])
     # distance threshold
     dists = upper_tri(squareform(pdist(struct.cart_coords)))
@@ -121,11 +122,23 @@ def relaxed_energy(struct: Structure, long: bool = False) -> (Structure, float):
 
     return (final_structure, final_energy / final_structure.num_sites)
 
-def e_form(struct: Structure) -> float:
-    if not is_structure_valid(struct):
-        return 100
-    else:
-        return relaxed_energy(struct)[1]
+def e_forms(structs: Structure, *args, **kwargs) -> list[float]:
+    if isinstance(structs, Structure):
+        structs = [structs]
+
+    invalid_structs = []
+    valid_structs = []
+    valid_is = []
+    for i, struct in enumerate(structs):
+        if is_structure_valid(struct):
+            valid_structs.append(struct)
+            valid_is.append(i)
+        else:
+            invalid_structs.append(struct)
+
+    energies = np.ones(len(struct)) * 100
+    energies[valid_is] = point_energies(valid_structs, *args, **kwargs)
+    return energies
 
 
 if __name__ == '__main__':

@@ -75,7 +75,7 @@ def debug_shapes(*names):
 def min_mod_1_(x: torch.Tensor):
     """Transforms x -> min(x % 1, -x % 1), without making copies."""
     # equal to 0.5 - |0.5 - (x % 1)|
-    x.frac_().abs_().neg_().add_(0.5).abs_().neg_().add(0.5)
+    x.frac_().abs_().neg_().add_(0.5).abs_().neg_().add_(0.5).abs_()
 
 def _pairwise_dist_ratio(c1: torch.Tensor, c2: torch.Tensor, rads1: torch.Tensor, rads2: torch.Tensor, lattice: torch.Tensor) -> torch.Tensor:
     """Gets pairwise distances (as a ratio of the radii sum) using the given lattice.
@@ -99,9 +99,9 @@ def _pairwise_dist_ratio(c1: torch.Tensor, c2: torch.Tensor, rads1: torch.Tensor
     diffs = torch.sum(set_diffs, dim=-1)
     diffs.sqrt_()
     rads = rads1.reshape(-1, 1, 1) + rads2.reshape(1, 1, -1)
-    return (diffs / rads).min(dim=-1)[0].min(dim=0)[0]
+    return (diffs / rads).min(dim=-1).values.min(dim=0).values
 
-pairwise_dist_ratio = torch.vmap(_pairwise_dist_ratio, (0, None, None, None, None), chunk_size=256)
+pairwise_dist_ratio = torch.vmap(_pairwise_dist_ratio, (0, None, None, None, None), chunk_size=128)
 
 def _pairwise_diag_dist_ratio(c1: torch.Tensor, radius: torch.Tensor, lattice: torch.Tensor) -> torch.Tensor:
     """Gets pairwise one-vs-rest (as a ratio of the radii sum) using the given lattice.
@@ -118,14 +118,23 @@ def _pairwise_diag_dist_ratio(c1: torch.Tensor, radius: torch.Tensor, lattice: t
     set_diffs = torch.minimum(set_diffs % 1, -set_diffs % 1)
     set_diffs = torch.matmul(set_diffs, lattice.T)
     set_diffs **= 2
-    # [A, B - 1, 3]
+    # [B - 1, 3]
     # sum over last axis
     # then take min over B and D
     diffs = torch.sum(set_diffs, dim=-1)
     diffs.sqrt_()
-    return (diffs / (2 * radius.unsqueeze(0))).min(dim=-1)[0]
+    rads = torch.broadcast_to(radius, c1[:, 0].shape)
+    rads = rads[1:] + rads[0]
+    return (diffs / rads).min(dim=-1)[0]
 
-pairwise_diag_dist_ratio = torch.vmap(_pairwise_diag_dist_ratio, (0, None, None), chunk_size=256)
+pairwise_diag_dist_ratio = torch.vmap(_pairwise_diag_dist_ratio, (0, None, None), chunk_size=128)
+
+def struct_dist_ratio(struct: Structure) -> torch.Tensor:
+    from pymatgen.analysis.molecule_structure_comparator import CovalentRadius
+    coords = torch.tensor(struct.frac_coords).float()
+    radii = torch.tensor([CovalentRadius.radius[site.specie.symbol] for site in struct.sites]).float()
+    lat = torch.tensor(struct.lattice.matrix).float()
+    return pairwise_diag_dist_ratio(coords, radii, lat)
 
 
 from monty.json import MontyDecoder, MontyEncoder
@@ -155,7 +164,7 @@ def load_mp20(split: typing.Literal['test', 'train', 'valid'],
             Structure.from_str(cif, 'cif', primitive=True)
             for cif in df['cif']
         ]
-        df['sga'] = [SpacegroupAnalyzer(s, symprec=0.1) for s in df['struct']]
+        df['sga'] = [SpacegroupAnalyzer(s, symprec=0.01) for s in df['struct']]
         df['comp'] = [s.composition for s in df['struct']]
         df['sg_number'] = df['spacegroup.number']
         df['sg_symbol'] = df['sga'].apply(lambda sga: sga.get_space_group_symbol())
@@ -173,3 +182,33 @@ def load_mp20(split: typing.Literal['test', 'train', 'valid'],
         df['sg'] = df['sg_number'].apply(get_group)
 
     return df
+
+
+if __name__ == '__main__':
+    test_pairwise_diag = True
+    test_min_mod1 = True
+    from copy import deepcopy
+
+    if test_pairwise_diag:
+        arr = torch.randn(10, 9, 3)
+        old_arr = arr.clone()
+        radii = torch.ones(arr.shape[1]) * 2.3
+        lattice = torch.eye(3)
+
+        dists = pairwise_diag_dist_ratio(arr, radii, lattice)
+        real_dists = arr[:, [0], :] - arr[:, 1:, :]
+        real_dists = torch.minimum(real_dists % 1, (-real_dists) % 1)
+        real_dists = real_dists @ lattice.T
+        real_dists = real_dists.square().sum(dim=-1).sqrt()
+        real_dists /= (radii[[0]] + radii[1:]).unsqueeze(0)
+        real_dists = real_dists.min(dim=1).values
+        assert torch.allclose(arr, old_arr)
+        assert torch.allclose(dists, real_dists)
+
+    if test_min_mod1:
+        arr = torch.randn(1000, 3)
+        old_arr = arr.clone()
+        min_mod_1_(arr)
+
+        real_ans = torch.minimum(arr % 1, (-arr) % 1)
+        assert torch.allclose(arr.abs(), real_ans.abs())

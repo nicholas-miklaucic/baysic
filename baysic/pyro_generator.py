@@ -19,6 +19,7 @@ from baysic.utils import debug_shapes, get_group, pairwise_dist_ratio, pairwise_
 from baysic.config import SearchConfig, WyckoffSelectionStrategy, LogConfig
 from pyxtal import Group
 from baysic.wp_assignment import WYCKOFFS
+from baysic.wyckoff_span import min_dist_ratio
 
 class SystemStructureModel(PyroModule):
     """A stochastic structure generator working within a particular lattice type."""
@@ -44,9 +45,9 @@ class SystemStructureModel(PyroModule):
         # lattices, because we can avoid generating lattices that are too small. Those
         # tend to waste a lot of computational power.
         if not self.needs_tight_ratio:
+            # μ = 1.01, σ = 0.83
             self.MIN_DIST_RATIO = 0.7
             self.MIN_LATTICE_RATIO = 0.77
-            # μ = 1.01, σ = 0.83
             self.volume_ratio = PyroSample(dist.LogNormal(loc=-0.252, scale=0.72))
         else:
             self.MIN_DIST_RATIO = 0.6
@@ -143,12 +144,14 @@ class SystemStructureModel(PyroModule):
     def forward(self):
         self.volume = (self.volume_ratio + self.MIN_LATTICE_RATIO) * self.atom_volume
         self.lattice = self.lattice_model(self.volume)()
+        self.lattice_obj = Lattice(self.lattice.detach().cpu().numpy())
 
         strategy = self.config.wyckoff_strategy
         if strategy == WyckoffSelectionStrategy.sample_distinct:
             group = self.group_options[self.group_opt]
             num_atoms = list(self.comp.values())
             all_wps = group.Wyckoff_positions
+            symb_to_wp = {wp.letter: wp for wp in all_wps}
             mults = torch.tensor([wp.multiplicity for wp in all_wps]).float()
             has_freedom = torch.tensor([wp.get_dof() != 0 for wp in all_wps])
             def try_assignment():
@@ -175,13 +178,31 @@ class SystemStructureModel(PyroModule):
                 return complete_assignment
 
             tries = 0
+            failed_span = 0
             comb = None
             while tries < 100 and comb is None:
                 tries += 1
                 comb = try_assignment()
+                if comb is not None:
+                    dist_ratio = min_dist_ratio(
+                        group.number,
+                        [symb_to_wp[x] for x in sum(comb, [])],
+                        sum([[el] * len(wp) for wp, el in zip(comb, self.comp.elements)], []),
+                        self.lattice_obj)
+                    if dist_ratio < self.MIN_DIST_RATIO:
+                        failed_span += 1
+                        comb = None
 
             self.log_info['num_assignments'] = -tries
+            self.log_info['num_assignments_failed_span'] = failed_span
             if comb is None:
+                # we currently are unable to explicitly rule out many WP assignments
+                # that are impossible to do without breaking one of the span requirements
+                # if that's why we're failing, it's not that big of an issue
+                if tries - failed_span <= 0.5 * tries:
+                    raise CoordinateGenerationFailed(self.log_info,
+                    "Couldn't find an assignment with feasible subspaces")
+
                 # note the difference from WyckoffAssignmentImpossible: this should
                 # (hopefully) never happen and is a problem with the model
                 raise WyckoffAssignmentFailed(
@@ -264,17 +285,18 @@ class SystemStructureModel(PyroModule):
                 # [ngrid, dof - 1]
                 set_valid = set_diffs >= self.MIN_DIST_RATIO
                 debug_shapes('set_valid')
+                good_all_coords = set_coords[set_valid, :, :]
             else:
                 # 1 coordinate is always valid
-                set_valid = torch.Tensor([1])
+                good_all_coords = set_coords
 
-            if not set_valid.any():
+            if not good_all_coords.numel():
                 raise CoordinateGenerationFailed(self.log_info, 'No structures found with acceptable inter-atomic distances')
 
-            debug_shapes('set_coords', 'set_valid')
-            good_all_coords = set_coords[torch.where(set_valid)[0], :, :]
+            debug_shapes('set_coords', 'good_all_coords')
             # only need to check base coord
-            good_coords = good_all_coords[:, :1, :]
+            # good_coords = good_all_coords[:, :1, :]
+            good_coords = good_all_coords
 
             if self.coords.numel():
                 radii = torch.tensor([CovalentRadius.radius[el.symbol] for el in self.elems])
@@ -292,7 +314,7 @@ class SystemStructureModel(PyroModule):
                 good_batch, coord_batch = min_cdists.shape
                 min_cdists = min_cdists.flatten()
                 k = min(min_cdists.numel(), self.config.n_parallel_structs)
-                dists, inds = torch.topk(min_cdists, k, largest=False, sorted=False)
+                dists, inds = torch.topk(min_cdists, k, largest=True, sorted=False)
                 inds = inds[dists >= self.MIN_DIST_RATIO]
                 dists = dists[dists >= self.MIN_DIST_RATIO]
                 if inds.numel() == 0:
@@ -322,13 +344,22 @@ class SystemStructureModel(PyroModule):
             self.elems.extend([elem] * wset.multiplicity)
             self.wsets.append(wset)
 
+            # radii = torch.tensor([CovalentRadius.radius[el.symbol] for el in self.elems])
+            # if self.coords.shape[1] > 1:
+            #     for single_coords in self.coords:
+            #         pdists = pairwise_dist_ratio(single_coords[1:].unsqueeze(0), single_coords[[0]].unsqueeze(0), radii[1:], radii[0], self.lattice)
+            #         if pdists.min() <= self.MIN_DIST_RATIO:
+            #             raise ValueError('Ah shit')
+
 
         self.log_info['num_outputs'] = self.coords.shape[0]
+
+
         return (self.coords, self.lattice, self.elems, self.wsets, self.sg)
 
     def to_structures(self) -> list[Structure]:
         np_coords = self.coords.detach().cpu().numpy()
-        lattice = self.lattice.detach().cpu().numpy()
+        lattice = self.lattice_obj
         return [Structure(lattice, self.elems, coords) for coords in np_coords]
 
     def to_gen_coords(self) -> torch.Tensor:
@@ -353,19 +384,22 @@ if __name__ == '__main__':
     from rich.markdown import Markdown
     from rich.progress import track
     from rich.logging import RichHandler
+    from baysic.lattice import OrthorhombicLattice, HexagonalLattice
+    from baysic.structure_evaluation import is_structure_valid
+    from baysic.utils import struct_dist_ratio
     console = Console()
-    # logging.basicConfig(
-    #     level="INFO", format='%(message)s', datefmt="[%X]", handlers=[RichHandler()]
-    # )
+    logging.basicConfig(
+        level="INFO", format='%(message)s', datefmt="[%X]", handlers=[RichHandler()]
+    )
     mod = SystemStructureModel(
         LogConfig(),
         SearchConfig(order_positions_by_radius=False, wyckoff_strategy=WyckoffSelectionStrategy.sample_distinct,
                      rng_seed=1234),
-        Composition({'Mg': 8, 'Al': 16, 'O': 32}),
+        # Composition({'Mg': 8, 'Al': 16, 'O': 32}),
         # Composition.from_dict({'K': 8, 'Li': 4, 'Cr': 4, 'F': 24}),
-        # Composition('Ce2B2Rh6'),
-        CubicLattice,
-        force_group=227
+        Composition('Ba2YCu3O7'),
+        OrthorhombicLattice,
+        force_group=16
     )
 
     rows = []
@@ -373,6 +407,18 @@ if __name__ == '__main__':
         try:
             coords, lat, elems, wsets, sg = mod.forward()
             new_structs = mod.to_structures()
+            for i, struct in enumerate(new_structs):
+                dists = struct.distance_matrix
+                radii = np.array([CovalentRadius.radius[site.specie.symbol] for site in struct.sites])
+                rads = np.add.outer(radii, radii)
+                ratios = dists / rads
+                ratios += np.eye(len(rads)) * 100
+                min_i = np.argmin(ratios)
+                min_pair = (min_i // len(ratios), min_i % len(ratios))
+                sites = [struct.sites[p] for p in min_pair]
+                if ratios.min() <= 0.7:
+                    raise ValueError('Uh oh!')
+
         except CoordinateGenerationFailed as e:
             # console.print(e)
             pass

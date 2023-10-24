@@ -1,25 +1,26 @@
 [log]
-log_dir_mode = "append"
-log_directory = "logs"
-use_directory = true
 use_wandb = false
 wandb_project = "baysic"
+use_directory = true
+log_directory = "logs"
+log_dir_mode = "append"
 
 [search]
-allowed_attempts_per_gen = 10.0
-lattice_scale_factor_mu = 1.1
-lattice_scale_factor_sigma = 0.47
-max_gens_at_once = 10
-n_grid = 12
 n_parallel_structs = 500
-num_generations = 50
-order_positions_by_radius = false
+n_grid = 12
+wyckoff_strategy = "sample_distinct"
 smoke_test = false
-wyckoff_strategy = "fewer_distinct"
+num_generations = 50
+max_gens_at_once = 10
+allowed_attempts_per_gen = 10.0
+order_positions_by_radius = true
 
 [target]
 mp_id = "mp-XXXXX"
 
 [cli]
-show_progress = true
 verbosity = "info"
+show_progress = true
+
+[device]
+device = "cpu"

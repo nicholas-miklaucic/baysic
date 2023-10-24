@@ -185,11 +185,16 @@ class HexagonalLattice(LatticeModel):
         # generate c tightly around 1
         # a = sqrt(1 / c)
         # then scale by volume ^ (1/3) and sqrt(3)/2 factor
-        self.c = PyroSample(dist.Gamma(4, 3))
+        self.a_over_c = PyroSample(dist.FoldedDistribution(
+            dist.SoftAsymmetricLaplace(
+                loc=0.078, scale=.081, asymmetry=0.116, softness=0.122
+            )))
 
     def forward(self) -> torch.Tensor:
-        c = self.c
-        a = torch.sqrt(1 / c)
+        # ca^2 = 1
+        # a^3 = a/c
+        a = self.a_over_c ** (1/3)
+        c = 1 / (a ** 2)
         ac = torch.tensor([a, c])
         scale_factor = torch.sqrt(torch.tensor([3.])) / 2.
         ac *= (self.volume / scale_factor) ** (1/3)
@@ -210,10 +215,11 @@ if __name__ == '__main__':
         print(lat.lattice_type)
         vol = atomic_volume(Composition({'O': 3, 'Sr': 1, 'Ti': 1})) * 1.3
         mod = lat(vol)
-        mats = [mod.forward() for _ in range(100)]
+        mats = []
         lats = []
-        for mat in mats:
-            lats.append(mod.to_lattice(mat))
+        for _ in range(100):
+            lats.append(mod.to_lattice())
+            mats.append(torch.tensor(lats[-1].matrix))
             assert abs(lats[-1].volume - vol) <= 1e-3
 
         mats = torch.stack(mats, dim=0)

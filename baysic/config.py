@@ -28,7 +28,7 @@ class TargetStructureConfig:
     # The API key used to grab the data. If None, use the environment variable MP_API_KEY.
     api_key: Optional[str] = None
 
-    
+
     def __post_init__(self):
         """Get the structure and spacegroup info from the ID."""
         if self.mp_id == PLACEHOLDER_MP_ID:
@@ -51,43 +51,43 @@ class TargetStructureConfig:
     def sg_symbol(self) -> str:
         """The space group symbol, e.g., Pm-3m."""
         return self.sga.get_space_group_symbol()
-    
+
 
     @property
     def sg_number(self) -> int:
         """The space group number, e.g., 225."""
-        return self.sga.get_space_group_number()    
-    
+        return self.sga.get_space_group_number()
+
     @property
     def composition(self) -> Composition:
         """The conventional cell Composition, e.g., Al6V2."""
-        return self.struct.composition    
+        return self.struct.composition
 
     @property
     def pretty_formula(self) -> str:
         """The pretty Unicode formula, e.g., Mg₆Au₂."""
         return self.struct.composition.to_pretty_string()
-    
+
     @property
     def formula(self) -> str:
         """The simple formula name, e.g., K2C1N2. Suitable for filenames and the like."""
-        return self.struct.composition.to_pretty_string()    
+        return self.struct.composition.to_pretty_string()
 
     @property
     def conv_struct(self) -> Structure:
         """The conventional structure."""
         return self.struct
-    
+
     @property
     def conv_lattice(self) -> Lattice:
         """The conventional lattice."""
         return self.struct.lattice
-    
+
     @property
     def crystal_system(self) -> str:
         """The crystal system, e.g., "monoclinic". """
         return self.sga.get_crystal_system()
-    
+
     @property
     def wyckoff_letters(self) -> str:
         """A string identifying the Wyckoff letters."""
@@ -96,14 +96,14 @@ class TargetStructureConfig:
 
 class WyckoffSelectionStrategy(Enum):
     """How to weight which Wyckoff assignments are selected."""
-    # Assign an equal probability for a WP assignment from each space group to be chosen.    
+    # Assign an equal probability for a WP assignment from each space group to be chosen.
     uniform_sg = 'uniform_sg'
     # Assign an equal probability for each WP assignment to be chosen. Some groups have
     # far more potential options than others, so this is not recommended.
     uniform_wp = 'uniform_wp'
     # Weight assignments so the distribution of distinct Wyckoff position counts roughly follows
     # actual data. Generally recommended.
-    weighted_wp_count = 'weighted_wp_count'    
+    weighted_wp_count = 'weighted_wp_count'
     # Weight assignments with fewer distinct Wyckoff positions. This does not correct for the number
     # of assignments of different multiplicities, which is probably strictly worse than the above,
     # but it's included for backwards compatibility and testing.
@@ -145,21 +145,10 @@ class SearchConfig:
     # the runtime to make the output structures more diverse.
     max_gens_at_once: int = 10
 
-    # This number times (num_generations / max_gens_at_once) is the number of attempted generations before generations 
-    # are stopped early. Keeping this low avoids wasting time on difficult generations, many of which are unlikely to 
+    # This number times (num_generations / max_gens_at_once) is the number of attempted generations before generations
+    # are stopped early. Keeping this low avoids wasting time on difficult generations, many of which are unlikely to
     # be useful, but for some structures you may need to increase this to better search for needles in a haystack.
     allowed_attempts_per_gen: float = 10.0
-
-    # The average volume of generated lattices, as a multiple of the sum of the volumes of the constituent atoms and their
-    # covalent radii. Increasing this makes it easier to generate valid structures, but means that more of those structures
-    # will have lattice volumes that are unlikely to be accurate. The default matches the empirical distribution well.
-    lattice_scale_factor_mu: float = 1.1
-
-    # The average volume of generated lattices, as a multiple of the sum of the volumes of the constituent atoms and their
-    # covalent radii. Increasing this makes it easier to generate structures with unusual lattice volumes, at the cost of 
-    # producing more unlikely generations for other compositions and potentially increasing the runtime by having more
-    # lattice generations that have no successful generations. The default matches the empirical distribution well.
-    lattice_scale_factor_sigma: float = 0.47
 
     # Whether to use covalent radii to determine the order to fill Wyckoff positions. This has no impact on successful runs,
     # but the order Wyckoff positions are filled has a big impact on how quickly failed iterations take. (Ideally, we want
@@ -175,7 +164,7 @@ class SearchConfig:
         if self.smoke_test:
             self.num_generations = 3
             self.max_gens_at_once = 2
-            
+
             if self.rng_seed is None:
                 self.rng_seed = 0
 
@@ -207,14 +196,14 @@ class LogConfig:
     # The log directory to use.
     log_directory: Path = Path('logs/')
 
-    # Whether to make a new directory for the run (new), completely overwrite an existing run (overwrite), or 
+    # Whether to make a new directory for the run (new), completely overwrite an existing run (overwrite), or
     # use an existing directory but only add new files (append).
     log_dir_mode: FileLoggingMode = FileLoggingMode.append
 
     def __post_init__(self):
         if not (self.use_wandb or self.use_directory):
             raise ValueError("Not logging to either W&B or the filesystem will not save the results!")
-        
+
 
 class LoggingLevel(Enum):
     """The logging level."""
@@ -239,7 +228,7 @@ class DeviceConfig:
     """Configuration of computing power."""
     # Torch device: probably should be either 'cpu' or 'cuda'.
     device: str = 'cpu'
-    
+
 
 @dataclass
 class MainConfig:
@@ -252,7 +241,7 @@ class MainConfig:
 
 
 def to_dict(config) -> dict:
-    """Converts a config (dataclass) to a dictionary suitable for using with W&B."""    
+    """Converts a config (dataclass) to a dictionary suitable for using with W&B."""
     with pyrallis.config_type('json'):
         print(json.loads(pyrallis.dump(config)))
 
