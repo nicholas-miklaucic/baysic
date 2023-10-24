@@ -2,8 +2,6 @@
 
 import warnings
 
-from flask.scaffold import F
-
 from baysic.errors import BaysicError, CoordinateGenerationFailed, StructureGenerationError, WyckoffAssignmentFailed, WyckoffAssignmentImpossible
 
 warnings.filterwarnings('ignore', module='.*mprester.*')
@@ -172,8 +170,7 @@ def main_(conf: MainConfig):
 
                 if gen_attempt == total_allowed:
                     # ran out of attempts
-                    if rows:There's implicitly one
-    # thread used for the
+                    if rows:
                         logging.warning(f'{str_group}: Only {len(rows)} successes, not {conf.search.num_generations}', extra=extra)
                         remaining = conf.search.num_generations - len(rows)
                         progress.update(total_task, advance=remaining)
