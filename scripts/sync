@@ -1,0 +1,1 @@
+rsync hpc:/work/miklaucn/logs/*.zip logs/ -aP

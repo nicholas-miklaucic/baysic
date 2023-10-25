@@ -50,7 +50,7 @@ def search_group(
     group: Group,
     str_group: str,
     run_dir: Path | None,
-    progress_queue: Queue,
+    progress_queue: Queue | None,
     task_id: int):
     extra = {'markup': True}
     if run_dir is not None:
@@ -67,9 +67,10 @@ def search_group(
     rows = []
     total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
 
-    # this is a special message, because start_task is different from update_task
-    progress_queue.put({'task_id': task_id, 'start': True})
-    progress_queue.put({'task_id': task_id, 'visible': True})
+    if progress_queue is not None:
+        # this is a special message, because start_task is different from update_task
+        progress_queue.put({'task_id': task_id, 'start': True})
+        progress_queue.put({'task_id': task_id, 'visible': True})
     for gen_attempt in range(total_allowed):
         if len(rows) >= conf.search.num_generations:
             break
@@ -97,7 +98,8 @@ def search_group(
             if e_form_val > 80:
                 continue
 
-            progress_queue.put({'task_id': task_id, 'advance': 1})
+            if progress_queue is not None:
+                progress_queue.put({'task_id': task_id, 'advance': 1})
 
             row = {
                 'struct': struct,
@@ -124,7 +126,8 @@ def search_group(
             group_df['num_attempts'] = gen_attempt
             df_to_json(group_df, run_dir / Path(f'{group.number}.json'))
 
-    progress_queue.put({'task_id': task_id, 'visible': False})
+    if progress_queue is not None:
+        progress_queue.put({'task_id': task_id, 'visible': False})
     return conf.search.num_generations - len(rows)
 
 
@@ -214,7 +217,7 @@ def main_(conf: MainConfig):
                 for group in groups:
                     str_group = f'[sky_blue3][bold]{group.number}[/bold][italic] ({group.symbol})[/italic][/sky_blue3]'
                     group_task = progress.add_task(str_group, total=conf.search.num_generations, visible=False, start=False)
-                    future = executor.submit(search_group, conf, lattice_type, group, str_group, run_dir, progress_queue if progress_queue is not None else Queue(), group_task)
+                    future = executor.submit(search_group, conf, lattice_type, group, str_group, run_dir, progress_queue, group_task)
                     def process_result(f):
                         try:
                             total_change = f.result()
@@ -227,15 +230,17 @@ def main_(conf: MainConfig):
                     futures.append(future)
 
             while any(not future.done() for future in futures):
-                if conf.cli.show_progress:
-                    while not progress_queue.empty():
-                        update = progress_queue.get(timeout=10)
+                while progress_queue is not None and progress_queue.qsize() > 0:
+                    try:
+                        update = progress_queue.get(timeout=5)
                         if 'start' in update:
                             progress.start_task(update['task_id'])
                         else:
                             progress.update(**update)
                             if 'advance' in update:
                                 progress.update(total_task, advance=update['advance'])
+                    except Empty:
+                        continue
 
     print('Complete!')
 
