@@ -28,6 +28,9 @@ class TargetStructureConfig:
     # The API key used to grab the data. If None, use the environment variable MP_API_KEY.
     api_key: Optional[str] = None
 
+    # Maximum number of atoms to use. Intended to prevent accidental freezes.
+    max_num_atoms: int = 20
+
 
     def __post_init__(self):
         """Get the structure and spacegroup info from the ID."""
@@ -46,6 +49,9 @@ class TargetStructureConfig:
                 self.struct = mpr.get_structure_by_material_id(self.mp_id, conventional_unit_cell=True)
                 self.sga = SpacegroupAnalyzer(self.struct)
                 self.symm = self.sga.get_symmetrized_structure()
+
+            if self.struct.num_sites > self.max_num_atoms:
+                raise BaysicError(f'Too many atoms: {self.mp_id}, {self.struct.num_sites}, {self.max_num_atoms}')
 
     @property
     def sg_symbol(self) -> str:
