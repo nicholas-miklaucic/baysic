@@ -94,21 +94,22 @@ class TargetStructureConfig:
 
 
 class WyckoffSelectionStrategy(Enum):
-    """How to weight which Wyckoff assignments are selected."""
+    """How to weight which Wyckoff assignments are selected. This is basically only configurable for future ablation:
+    the correct answer is sample_distinct."""
     # Assign an equal probability for a WP assignment from each space group to be chosen.
     uniform_sg = 'uniform_sg'
     # Assign an equal probability for each WP assignment to be chosen. Some groups have
     # far more potential options than others, so this is not recommended.
     uniform_wp = 'uniform_wp'
     # Weight assignments so the distribution of distinct Wyckoff position counts roughly follows
-    # actual data. Generally recommended.
+    # actual data.
     weighted_wp_count = 'weighted_wp_count'
     # Weight assignments with fewer distinct Wyckoff positions. This does not correct for the number
     # of assignments of different multiplicities, which is probably strictly worse than the above,
     # but it's included for backwards compatibility and testing.
     fewer_distinct = 'fewer_distinct'
-    # Randomly sample, completely eschewing the number of generations. Try to weight towards fewer
-    # distinct Wyckoff combinations when doing so. This is *much* faster: definitely use it.
+    # Randomly generate assignments without first enumerating every possible assignment. *Much* faster, consumes
+    # *much* less memory, and highly recommended.
     sample_distinct = 'sample_distinct'
 
 
@@ -192,10 +193,6 @@ class LogConfig:
     # Whether to log outputs to a directory.
     use_directory: bool = True
 
-    # Whether to create a file containing all generated structures. This
-    # uses a lot more disk space but saves some postprocessing.
-    make_total_file: bool = False
-
     # The log directory to use.
     log_directory: Path = Path('logs/')
 
@@ -232,8 +229,15 @@ class DeviceConfig:
     # Torch device: probably should be either 'cpu' or 'cuda'.
     device: str = 'cpu'
 
-    # Number of threads, if using CPU.
-    threads: int = 1
+    # Number of threads for Pytorch. I think PyTorch parallelism
+    # is less efficient than parallelized space group enumeration,
+    # but for single-group workloads perhaps consider increasing this.
+    torch_threads: int = 1
+
+    # Number of worker threads for processing groups. Nonpositive numbers
+    # instead mean the number of available threads to leave open: 0 means use
+    # all threads, and -2 means to leave two threads.
+    max_workers: int = -2
 
 
 @dataclass

@@ -1,8 +1,6 @@
 """Pyro model for a specific Wyckoff position."""
 
-from distutils.ccompiler import get_default_compiler
 from math import floor
-from turtle import forward
 import numpy as np
 import torch
 import torch.nn as nn
@@ -38,7 +36,7 @@ class WyckoffSet(torch.nn.Module):
     @property
     def dof(self) -> int:
         return int(self.wp.get_dof())
-    
+
     @property
     def multiplicity(self) -> int:
         return len(self.wp.ops)
@@ -47,7 +45,7 @@ class WyckoffSet(torch.nn.Module):
         """Returns a new Wyckoff general position."""
         self.xyz = PyroSample(dist.Uniform(torch.zeros(3), torch.ones(3)))
 
-    def _initialize_space(self):        
+    def _initialize_space(self):
         verts = np.array(self.asu.shape_vertices()).astype(float)
 
         xyverts = verts[:, [0, 1]]
@@ -57,11 +55,11 @@ class WyckoffSet(torch.nn.Module):
             loc=torch.tensor(xyverts[:, 0].min()),
             scale=torch.tensor(xyverts[:, 0].ptp())
         )
-        
+
 
         edges = []
         for i, j in xyhull.simplices:
-            xi, xj = xyverts[:, 0][[i, j]]    
+            xi, xj = xyverts[:, 0][[i, j]]
             if xi == xj:
                 # can only happen at end or start, ignore
                 pass
@@ -96,7 +94,7 @@ class WyckoffSet(torch.nn.Module):
         self.ymax = LinearSpline(*torch.tensor(xyverts[max_path].T))
 
         self.N = torch.tensor([cut.as_float_cut_plane().n for cut in self.asu.cuts]).float()
-        self.c = torch.tensor([cut.as_float_cut_plane().c for cut in self.asu.cuts]).reshape(-1, 1)        
+        self.c = torch.tensor([cut.as_float_cut_plane().c for cut in self.asu.cuts]).reshape(-1, 1)
 
         self.ops = torch.stack([torch.tensor(op.affine_matrix) for op in self.wp.ops], dim=0).float()
 
@@ -118,14 +116,14 @@ class WyckoffSet(torch.nn.Module):
         zmin = z_vals[..., N_xy.reshape(-1) > 0].max(dim=-1)[0]
         zmax = z_vals[..., N_xy.reshape(-1) < 0].min(dim=-1)[0]
         return (zmin, zmax)
-    
+
     def to_all_positions(self, asu_xyz: torch.Tensor) -> torch.Tensor:
         """Expands to all of the positions.
-        
+
         asu_xyz: [..., 3]
-        
+
         Output: [..., multiplicity, 3]
-        """        
+        """
         if asu_xyz.ndim < 2:
             asu_xyz = asu_xyz.unsqueeze(0)
         out = torch.matmul(
@@ -135,14 +133,14 @@ class WyckoffSet(torch.nn.Module):
             self.ops.swapaxes(-1, -2)
         )  # to ..., mult, 1, 4
         return out[..., 0, :3]
-    
+
     @staticmethod
     def _inv_transform(transform: AffineTransform) -> AffineTransform:
         """Inverts the transform, handling the case of near-zero scale by returning a scale of one."""
-        inv_scale = torch.where(torch.abs(transform.scale) <= 1e-6, 1, 1 / transform.scale)        
+        inv_scale = torch.where(torch.abs(transform.scale) <= 1e-6, 1, 1 / transform.scale)
         return AffineTransform(-transform.loc * inv_scale, inv_scale)
 
-    
+
     def inverse(self, xyz: torch.Tensor) -> torch.Tensor:
         """Inverts the transformation.
         xyz: [..., 3]
@@ -163,13 +161,13 @@ class WyckoffSet(torch.nn.Module):
 
         free_axes = [i for i in range(3) if i not in self.wp.get_frozen_axis()]
         return torch.cat([x_u, y_u, z_u], dim=-1)[..., free_axes]
-        
-    
+
+
     def to_asu(self, xyz: torch.Tensor) -> torch.Tensor:
         """Converts to the transformed space.
-        
+
         xyz: [..., num_dof]
-        
+
         Output: [..., 3]
         """
         if len(xyz.shape) == 0 or len(xyz.shape) == 1 and xyz.shape[-1] >= 3:
@@ -187,17 +185,17 @@ class WyckoffSet(torch.nn.Module):
                 # x is constant
                 # note that WPs never have, e.g., -y, y, z
                 # it would be x, -x, z instead
-                
+
                 # sometimes the first position isn't the one in the ASU
                 # so search for one of those
                 x = gen_tau[0] % 1
-                if (0 <= torch.round(self.x_trans.inv(x), decimals=2) <= 1): 
+                if (0 <= torch.round(self.x_trans.inv(x), decimals=2) <= 1):
                     x = torch.ones_like(xyz[..., :1]) * x
                     if xyz.numel() == 0:
                         x = torch.tensor([[gen_tau[0]]])
                 else:
                     continue
-                
+
 
             # x_u = (x - self.xmin) / (self.xmax - self.xmin)
             ylo, yhi = self.ymin(x).float(), self.ymax(x).float()
@@ -213,7 +211,7 @@ class WyckoffSet(torch.nn.Module):
                 # it would be x, y, x-y instead
                 y = (gen_rot[1, 0].item() * x + gen_tau[1].item()) % 1
 
-            
+
             zlo, zhi = self._get_z_bounds(x, y)
             z_trans = AffineTransform(zlo, zhi - zlo)
 
@@ -225,7 +223,7 @@ class WyckoffSet(torch.nn.Module):
                 # z is function of x and/or y
                 z = (torch.cat([x, y], dim=-1) @ gen_rot[2, :2] + gen_tau[2]) % 1
                 z = z.unsqueeze(-1)
-            
+
             if z.shape != x.shape:
                 raise ValueError()
             return torch.cat([x, y, z], dim=-1)
@@ -240,7 +238,7 @@ if __name__ == '__main__':
 
     from rich.progress import track
 
-    if test_Immm:        
+    if test_Immm:
         wps = Group('Immm').Wyckoff_positions
         for wp in wps:
             if wp.get_dof() == 0:
@@ -257,7 +255,7 @@ if __name__ == '__main__':
             all_posns = ws.to_all_positions(posns)
         print('Immm success!')
 
-    if test_screw:        
+    if test_screw:
         ws = WyckoffSet(143, 'c')
         zz = torch.cartesian_prod(
             torch.linspace(0.01, 0.99, 10),
@@ -276,13 +274,13 @@ if __name__ == '__main__':
             for wp in wps[:2] + wps[-2:]:
                 ws = WyckoffSet(group, wp.index)
                 if wp.get_dof() == 0:
-                    continue 
+                    continue
 
                 xyz = torch.cartesian_prod(*[
                     torch.linspace(0.01, 0.99, 5)
                     for _ in range(wp.get_dof())
                 ]).reshape(5 ** wp.get_dof(), wp.get_dof())
-            
+
                 posns = ws.to_asu(xyz)
                 for i in range(len(posns)):
                     if not torch.max(torch.abs(ws.to_asu(ws.inverse(posns[[i]])) - posns[i])) < 1e-3:
@@ -298,8 +296,8 @@ if __name__ == '__main__':
             for wp in wps[:2] + wps[-2:]:
                 ws = WyckoffSet(group, wp.index)
                 xyz = torch.cartesian_prod(
-                    torch.linspace(0.01, 0.99, 5), 
-                    torch.linspace(0.01, 0.99, 5), 
+                    torch.linspace(0.01, 0.99, 5),
+                    torch.linspace(0.01, 0.99, 5),
                     torch.linspace(0.01, 0.99, 5)
                 ).reshape(125, 3)[:, :wp.get_dof()]
 
@@ -321,18 +319,18 @@ if __name__ == '__main__':
                 continue
 
             xyz = torch.cartesian_prod(
-                torch.linspace(0.01, 0.99, 5), 
-                torch.linspace(0.01, 0.99, 5), 
+                torch.linspace(0.01, 0.99, 5),
+                torch.linspace(0.01, 0.99, 5),
                 torch.linspace(0.01, 0.99, 5)
             ).reshape(125, 3)[:, :wp.wp.get_dof()]
 
             posns = wp.to_asu(xyz)
             for pos in posns:
-                for cut in wp.asu.cuts:                
+                for cut in wp.asu.cuts:
                     if not cut.is_inside(pos.numpy()):
                         print(group, wp.wp)
                         print(wp.asu.shape_vertices())
                         print(pos)
                         raise ValueError('Whoops!')
-            
+
         print('Group general position test successful!')

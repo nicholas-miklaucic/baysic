@@ -1,26 +1,42 @@
 # BAYesian Symmetry-Informed Crystal structure prediction
 
-**Warning: this repository is still in a *very* early development stage. Expect breaking changes and bugs!**
+**This repository is still in a beta stage. Expect breaking changes and potential bugs.**
 
-The Bayesian part is a bit of a misnomer right now. What *is* working is the ability to generate crystal structures matching a particular lattice system (cubic for the time being).
+This repository allows you to generate candidate structures for a given chemical composition. It does this in several steps:
+
+- Pick a space group.
+- Generate an appropriate lattice for that space group.
+- Generate a valid Wyckoff position assignment for the composition.
+- Find specific coordinates for each free Wyckoff axis (every letter `x, y, z` in the Wyckoff operations) such that the generated structure has feasible inter-atomic distances.
+
+Baysic tempers unconstrained random generation with reasonable prior distributions (for example, generating lattices with feasible volumes) and employs fairly sophisticated algorithms to generate structures efficiently. In many cases, one of the generated structures can be relaxed into the correct structure.
 
 ## Installation
 
 In the same directory as this file:
 
 ```bash
-conda create -n baysic python=3.10
+conda create -n baysic python=3.10 pytorch --channel pytorch
 conda activate baysic
-pip install -r requirements.txt
-pip install --editable . 
+conda install -c conda-forge cctbx-base
+pip install --upgrade numpy pandas seaborn chgnet mp_api rich pyrallis scipy pyxtal monty tqdm pyro-ppl toml rho-plus
+pip install --editable .
 ```
 
+The `--editable` in the last command means changes in the source code will work properly. Annoyingly, however, it makes imports incredibly slow, which can be aggravating if you're running small scripts and don't want several seconds of latency before the program is responsive. In these cases, consider doing `pip install .`, which freezes the package, running whatever short scripts you're interested in, and then later running `pip install --editable .` if you continue to make edits to the source code.
+
+To test things are working, run `pyt`
+
 ## Execution
-Run `python baysic/pyro_run.py` and go meditate—it might take a while.
+Run `python baysic/group_search.py` with suitable command-line options.
 
-Check that file for hyperparameters.
+Try `python baysic/group_search.py --help` for hyperparameters, or check the files in `configs/`.
 
-## Results
-When it's done, `logs/mm-dd/1/` will contain logs of each run.
-Each separate molecule will have its own `json` with the data for each generated structure. Additionally, `total.json` will contain the molecule-level data, using only the best generated structure.
-See `diagnostics` and `task_diagnostics` for some example plots using that data.
+## Documentation
+Good documentation will come later, when the program is not undergoing such frequent updates. The help descriptions in `config.py`, also reachable by `python baysic/group_search.py --help`, give some guidance for using the program. For now, while the program is in beta, the defaults represent an educated guess at good options for a specific application.
+
+For anything else, you're best off contacting me on GitHub or at [nmiklaucic@sc.edu](mailto:nmiklaucic@sc.edu).
+
+The many notebooks in this directory (VSCode makes it convenient to put them all in the outer directory, unfortunately) are mostly for development purposes and may be misleading. `priors.ipynb` is an exception: it shows the data exploration that has motivated my choices for several important hyperparameters, and is a worthwhile read if you're interested in why Baysic generates more realistic structures more quickly than prior random generation libraries.
+
+It also gives a sense of promising future developments: replacing random samples from static distributions with samples from generated, dynamic distributions has some potential.

@@ -2,6 +2,7 @@
 use_wandb = false
 wandb_project = "baysic"
 use_directory = true
+make_total_file = false
 log_directory = "logs"
 log_dir_mode = "append"
 
@@ -24,4 +25,5 @@ show_progress = true
 
 [device]
 device = "cpu"
-threads = 1
+torch_threads = 1
+max_workers = 8

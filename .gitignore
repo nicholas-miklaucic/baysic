@@ -3,6 +3,11 @@ logs/
 images/
 data/
 
+# profile data, used for internal testing
+profile.html
+profile.svg
+profile.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

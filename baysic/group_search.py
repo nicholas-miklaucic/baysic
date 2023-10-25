@@ -7,6 +7,7 @@ from baysic.errors import BaysicError, CoordinateGenerationFailed, StructureGene
 warnings.filterwarnings('ignore', module='.*mprester.*')
 
 import gc
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 from pyrallis import field
@@ -15,7 +16,8 @@ import numpy as np
 
 import torch
 from baysic.config import FileLoggingMode, MainConfig, TargetStructureConfig
-from baysic.lattice import LATTICES, CubicLattice
+from baysic.lattice import LATTICES, CubicLattice, LatticeModel
+from pyxtal import Group
 from baysic.pyro_generator import SystemStructureModel
 from pathlib import Path
 from datetime import datetime
@@ -32,16 +34,104 @@ from rich.logging import RichHandler
 from rich.progress import Progress
 import rich.progress as prog
 
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
+from queue import Empty, Queue
+
 # comp = Composition("K4C2N4")
 # https://next-gen.materialsproject.org/materials/mp-510376
 # https://next-gen.materialsproject.org/materials/mp-11251
 # https://next-gen.materialsproject.org/materials/mp-2554
 # https://next-gen.materialsproject.org/materials/mp-10408
 
+def search_group(
+    conf: MainConfig,
+    lattice_type: LatticeModel,
+    group: Group,
+    str_group: str,
+    run_dir: Path | None,
+    progress_queue: Queue,
+    task_id: int):
+    extra = {'markup': True}
+    if run_dir is not None:
+        log_dir = run_dir / Path(f'{group.number}.json')
+        if conf.log.log_dir_mode == FileLoggingMode.append and log_dir.exists():
+            logging.info(f'{str_group} already done, continue', extra=extra)
+            return conf.search.num_generations
+    try:
+        model = SystemStructureModel(conf.log, conf.search, conf.target.composition, lattice_type, group)
+    except WyckoffAssignmentImpossible as e:
+        # logging.info(f'No valid Wyckoff assignments for {str_group}', extra=extra)
+        return conf.search.num_generations
+
+    rows = []
+    total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
+
+    # this is a special message, because start_task is different from update_task
+    progress_queue.put({'task_id': task_id, 'start': True})
+    progress_queue.put({'task_id': task_id, 'visible': True})
+    for gen_attempt in range(total_allowed):
+        if len(rows) >= conf.search.num_generations:
+            break
+
+        try:
+            # gc.collect()
+            coords, lattice, elems, wsets, sg = model()
+            log_info = deepcopy(model.log_info)
+        except WyckoffAssignmentFailed as e:
+            # this ideally shouldn't be happening
+            # track these failures more closely
+            logging.exception(e)
+            continue
+        except CoordinateGenerationFailed:
+            continue
+        except AttributeError as e:
+            logging.error(f'AttributeError for {str_group}', extra=extra)
+            logging.error(e)
+            continue
+
+
+        new_structs = model.to_structures()[:conf.search.max_gens_at_once]
+        e_form_vals = e_forms(new_structs, conf.device.device)
+        for struct, e_form_val in zip(new_structs, e_form_vals):
+            if e_form_val > 80:
+                continue
+
+            progress_queue.put({'task_id': task_id, 'advance': 1})
+
+            row = {
+                'struct': struct,
+                'e_form': e_form_val,
+                'lat_matrix': lattice.detach().cpu().numpy(),
+                'gen_attempt': gen_attempt,
+            }
+            row.update(log_info)
+            rows.append(row)
+
+
+    if gen_attempt == total_allowed:
+        # ran out of attempts
+        if rows:
+            logging.warning(f'{str_group}: Only {len(rows)} successes, not {conf.search.num_generations}', extra=extra)
+        else:
+            logging.info(f'{str_group}: Generation failed', extra=extra)
+    else:
+        if conf.log.use_directory:
+            group_df = pd.DataFrame(rows)
+            group_df['group_number'] = group.number
+            group_df['group_symbol'] = group.symbol
+            group_df['lattice_type'] = lattice_type.lattice_type
+            group_df['num_attempts'] = gen_attempt
+            df_to_json(group_df, run_dir / Path(f'{group.number}.json'))
+
+    progress_queue.put({'task_id': task_id, 'visible': False})
+    return conf.search.num_generations - len(rows)
+
+
 def main_(conf: MainConfig):
     """Runs a search to generate structures for a specific composition."""
     torch.set_default_device(conf.device.device)
-    torch.set_num_threads(conf.device.threads)
+    torch.set_num_threads(conf.device.torch_threads)
     if conf.search.rng_seed is not None:
         torch.manual_seed(conf.search.rng_seed)
 
@@ -72,7 +162,6 @@ def main_(conf: MainConfig):
         run_dir = date_dir / str(run_num)
         run_dir.mkdir(exist_ok=True)
 
-    big_df = []
     with Progress(
         prog.TextColumn('[progress.description]{task.description}'),
         prog.BarColumn(80,
@@ -100,102 +189,48 @@ def main_(conf: MainConfig):
             total += len(groups) * conf.search.num_generations
 
 
-        total_task = progress.add_task(f'[bold] [deep_pink3] {conf.target.formula} [/deep_pink3] Generation [/bold]', total=total)
-
-        for lattice_type in LATTICES:
-            groups = lat_groups[lattice_type.lattice_type]
-
-            lattice_total = len(groups) * conf.search.num_generations
-            lattice_task = progress.add_task(lattice_type.lattice_type.title(),
-                                             total=lattice_total)
-            for group in groups:
-                str_group = f'[sky_blue3] [bold] {group.number} [/bold] [italic] ({group.symbol}) [/italic] [/sky_blue3]'
-                extra = {'markup': True}
-                log_dir = run_dir / Path(f'{group.number}.json')
-                if conf.log.log_dir_mode == FileLoggingMode.append and log_dir.exists():
-                    logging.info(f'{str_group} already done, continue', extra=extra)
-                    for task in (total_task, lattice_task):
-                        progress.update(task, advance=conf.search.num_generations)
-                    continue
-                try:
-                    model = SystemStructureModel(conf.log, conf.search, conf.target.composition, lattice_type, group)
-                except WyckoffAssignmentImpossible as e:
-                    logging.info(f'No valid Wyckoff assignments for {str_group}', extra=extra)
-                    for task in (total_task, lattice_task):
-                        progress.update(task, advance=conf.search.num_generations)
-                    continue
-
-                rows = []
-                group_task = progress.add_task(str_group, total=conf.search.num_generations)
-                total_allowed = round(conf.search.allowed_attempts_per_gen * conf.search.num_generations)
-                for gen_attempt in range(total_allowed):
-                    if len(rows) >= conf.search.num_generations:
-                        break
-
-                    try:
-                        # gc.collect()
-                        coords, lattice, elems, wsets, sg = model()
-                        log_info = deepcopy(model.log_info)
-                    except WyckoffAssignmentFailed as e:
-                        # this ideally shouldn't be happening
-                        # track these failures more closely
-                        logging.exception(e)
-                        continue
-                    except CoordinateGenerationFailed:
-                        continue
-                    except AttributeError as e:
-                        logging.error(f'AttributeError for {str_group}', extra=extra)
-                        logging.error(e)
-                        continue
+        total_task = progress.add_task(
+            f'[bold] [deep_pink3] {conf.target.formula} [/deep_pink3] Generation [/bold]',
+            total=total)
 
 
-                    new_structs = model.to_structures()[:conf.search.max_gens_at_once]
-                    e_form_vals = e_forms(new_structs, conf.device.device)
-                    for struct, e_form_val in zip(new_structs, e_form_vals):
-                        if e_form_val > 80:
-                            continue
+        num_avail_cpus = len(os.sched_getaffinity(0))
+        if conf.device.max_workers <= 0:
+            # represents number of threads to *not* use
+            # anything above 30 should be manually specified
+            max_workers = min(num_avail_cpus - conf.device.max_workers, 30)
+        else:
+            max_workers = min(num_avail_cpus, conf.device.max_workers)
 
-                        for task in (total_task, lattice_task, group_task):
-                            progress.update(task, advance=1)
+        futures = []
+        manager = mp.Manager()
+        progress_queue = manager.Queue()
+        with ProcessPoolExecutor(max_workers) as executor:
+            for lattice_type in LATTICES:
+                groups = lat_groups[lattice_type.lattice_type]
 
-                        row = {
-                            'struct': struct,
-                            'e_form': e_form_val,
-                            'lat_matrix': lattice.detach().cpu().numpy(),
-                            'gen_attempt': gen_attempt,
-                        }
-                        row.update(log_info)
-                        rows.append(row)
+                for group in groups:
+                    str_group = f'[sky_blue3][bold]{group.number}[/bold][italic] ({group.symbol})[/italic][/sky_blue3]'
+                    group_task = progress.add_task(str_group, total=conf.search.num_generations, visible=False, start=False)
+                    future = executor.submit(search_group, conf, lattice_type, group, str_group, run_dir, progress_queue, group_task)
+                    def process_result(f):
+                        try:
+                            total_change = f.result()
+                            progress.update(total_task, advance=total_change)
+                        except Exception as e:
+                            logging.exception(e)
+                    future.add_done_callback(process_result)
+                    futures.append(future)
 
-
-                if gen_attempt == total_allowed:
-                    # ran out of attempts
-                    if rows:
-                        logging.warning(f'{str_group}: Only {len(rows)} successes, not {conf.search.num_generations}', extra=extra)
-                        remaining = conf.search.num_generations - len(rows)
-                        progress.update(total_task, advance=remaining)
-                        progress.update(lattice_task, advance=remaining)
-
+            while any(not future.done() for future in futures):
+                while not progress_queue.empty():
+                    update = progress_queue.get(timeout=10)
+                    if 'start' in update:
+                        progress.start_task(update['task_id'])
                     else:
-                        logging.info(f'{str_group}: Generation failed', extra=extra)
-
-                    progress.update(group_task, completed=True)
-                    continue
-
-                group_df = pd.DataFrame(rows)
-                group_df['group_number'] = group.number
-                group_df['group_symbol'] = group.symbol
-                group_df['lattice_type'] = lattice_type.lattice_type
-                group_df['num_attempts'] = gen_attempt
-                big_df.append(group_df)
-
-                if conf.log.use_directory:
-                    df_to_json(group_df, run_dir / Path(f'{group.number}.json'))
-
-
-    if conf.log.use_directory and conf.log.make_total_file:
-        big_df = pd.concat(big_df).reset_index(drop=True)
-        df_to_json(big_df, run_dir / Path(f'total.json'))
+                        progress.update(**update)
+                        if 'advance' in update:
+                            progress.update(total_task, advance=update['advance'])
 
     print('Complete!')
 
@@ -206,6 +241,7 @@ def main(main: MainConfig):
     main_(main)
 
 if __name__ == '__main__':
+    mp.set_start_method('fork', force=True)
     main()
     # from baysic.config import TargetStructureConfig, MainConfig
     # main_(MainConfig(target=TargetStructureConfig('mp-20674')))

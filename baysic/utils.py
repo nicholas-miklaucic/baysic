@@ -158,7 +158,7 @@ def load_mp20(split: typing.Literal['test', 'train', 'valid'],
     remote_url = f'https://raw.githubusercontent.com/txie-93/cdvae/main/data/mp_20/{split}.csv'
     file_path = Path('data') / 'mp20'/ f'{split}.json'
     if not file_path.exists() or force_redownload:
-        logging.info(f'Downloading MP20 ({split})...')
+        logging.info(f'Downloading MP20 and processing. This takes a couple minutes...')
         df = pd.read_csv(remote_url)
         df['struct'] = [
             Structure.from_str(cif, 'cif', primitive=True)

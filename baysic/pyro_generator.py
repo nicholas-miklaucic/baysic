@@ -23,10 +23,14 @@ from baysic.wyckoff_span import min_dist_ratio
 
 class SystemStructureModel(PyroModule):
     """A stochastic structure generator working within a particular lattice type."""
-    def __init__(self, log: LogConfig, config: SearchConfig, comp: Composition, lattice: LatticeModel, force_group: int | str | Group | None = None):
-        """
-        force_group: either a group symbol/number or None to use all potential groups.
-        """
+    def __init__(
+        self,
+        log: LogConfig,
+        config: SearchConfig,
+        comp: Composition,
+        lattice: LatticeModel,
+        force_group: int | str | Group | None = None
+    ):
         super().__init__()
         self.log = log
         self.config = config

@@ -5,6 +5,7 @@ smoke_test = true
 mp_id = "mp-22862"
 
 [log]
-use_wandb = false
-use_directory = true
 log_dir_mode = "overwrite"
+log_directory = "/tmp/"
+use_directory = true
+use_wandb = false
