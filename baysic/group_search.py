@@ -202,8 +202,11 @@ def main_(conf: MainConfig):
             max_workers = min(num_avail_cpus, conf.device.max_workers)
 
         futures = []
-        manager = mp.Manager()
-        progress_queue = manager.Queue()
+        if conf.cli.show_progress:
+            manager = mp.Manager()
+            progress_queue = manager.Queue()
+        else:
+            progress_queue = None
         with ProcessPoolExecutor(max_workers) as executor:
             for lattice_type in LATTICES:
                 groups = lat_groups[lattice_type.lattice_type]
@@ -211,25 +214,28 @@ def main_(conf: MainConfig):
                 for group in groups:
                     str_group = f'[sky_blue3][bold]{group.number}[/bold][italic] ({group.symbol})[/italic][/sky_blue3]'
                     group_task = progress.add_task(str_group, total=conf.search.num_generations, visible=False, start=False)
-                    future = executor.submit(search_group, conf, lattice_type, group, str_group, run_dir, progress_queue, group_task)
+                    future = executor.submit(search_group, conf, lattice_type, group, str_group, run_dir, progress_queue if progress_queue is not None else Queue(), group_task)
                     def process_result(f):
                         try:
                             total_change = f.result()
                             progress.update(total_task, advance=total_change)
                         except Exception as e:
                             logging.exception(e)
-                    future.add_done_callback(process_result)
+
+                    if conf.cli.show_progress:
+                        future.add_done_callback(process_result)
                     futures.append(future)
 
             while any(not future.done() for future in futures):
-                while not progress_queue.empty():
-                    update = progress_queue.get(timeout=10)
-                    if 'start' in update:
-                        progress.start_task(update['task_id'])
-                    else:
-                        progress.update(**update)
-                        if 'advance' in update:
-                            progress.update(total_task, advance=update['advance'])
+                if conf.cli.show_progress:
+                    while not progress_queue.empty():
+                        update = progress_queue.get(timeout=10)
+                        if 'start' in update:
+                            progress.start_task(update['task_id'])
+                        else:
+                            progress.update(**update)
+                            if 'advance' in update:
+                                progress.update(total_task, advance=update['advance'])
 
     print('Complete!')
 
