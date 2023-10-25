@@ -150,7 +150,7 @@ def main_(conf: MainConfig):
         date = datetime.now().strftime('%m-%d')
         date_dir = conf.log.log_directory / Path(conf.target.formula)
         if not date_dir.exists():
-            date_dir.mkdir()
+            date_dir.mkdir(parents=True)
 
         run_num = 1
         while (date_dir / str(run_num)).exists() and conf.log.log_dir_mode == FileLoggingMode.new:
