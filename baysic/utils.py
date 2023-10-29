@@ -14,6 +14,21 @@ import logging
 import inspect
 from functools import lru_cache
 from pathlib import Path
+from spglib import get_spacegroup_type
+
+full_symbols = pd.Series([get_spacegroup_type(Group(g).hall_number)['international_short'] for g in range(1, 231)], name='group_symbol', index=range(1, 231))
+
+def to_pretty_name(g_nums):
+    g = full_symbols.loc[g_nums]
+    g = g.str.replace(r'_(\d)', lambda m: chr(int(f'208{m.groups()[0]}', base=16)), regex=True)
+    g = g.str.replace(r'-(\d)', '\\1\u0305', regex=True)
+    return g.values
+
+def to_sorted_pretty_string(comp):
+    els = []
+    for k in sorted(comp.keys(), key=lambda e: e.symbol):
+        els.append(f'{k.symbol}{int(comp[k])}')
+    return ''.join(els)
 
 
 @lru_cache(maxsize=1024)
@@ -143,8 +158,10 @@ def df_to_json(df: pd.DataFrame, file: PathLike):
     df.to_json(file, orient='records', default_handler=MontyEncoder().default)
 
 
-def json_to_df(fn: PathLike) -> pd.DataFrame:
+def json_to_df(fn: typing.Any) -> pd.DataFrame:
     '''Converts a JSON file to DataFrame, deserializing pymatgen objects as appropriate.'''
+    if hasattr(fn, 'read'):
+        return pd.json_normalize(json.load(fn, cls=MontyDecoder))
     with open(fn, 'r') as infile:
         return pd.json_normalize(json.load(infile, cls=MontyDecoder))
 
