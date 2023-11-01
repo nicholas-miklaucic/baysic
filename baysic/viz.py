@@ -12,7 +12,7 @@ def ridge_plot(
     num_var: str,
     order_by = lambda x: np.nanquantile(x, 0.1),
     height: int = 10,
-    subplot_height: float = 0.8
+    subplot_height: float = 0.8,
 ):
     if order_by is not None:
         order = df[[group_var, num_var]].groupby(group_var, observed=True).agg(order_by)[num_var].sort_values().index
