@@ -3,6 +3,10 @@ logs/
 .logs/
 images/
 data/
+wandb/
+saved_models/
+.lr*.ckpt
+.pt_tmp/
 
 # profile data, used for internal testing
 profile.html

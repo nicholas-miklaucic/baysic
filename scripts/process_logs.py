@@ -58,8 +58,8 @@ def main(nums):
     return process_map(process, nums, max_workers=8)
 
 if __name__ == '__main__':
-    nums = list(range(28, 41))
+    nums = list(range(81, 101))
     dfs = main(nums)
     df = pd.concat(dfs)
     df = df.reset_index(drop=True)
-    df.to_feather(f'logs/28-40.feather')
+    df.to_feather(f'logs/81-100.feather')
