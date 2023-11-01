@@ -1,5 +1,6 @@
 # logs, big datasets, output images
 logs/
+.logs/
 images/
 data/
 
