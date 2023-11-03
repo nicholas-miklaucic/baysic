@@ -19,7 +19,7 @@ In the same directory as this file:
 conda create -n baysic python=3.10 pytorch --channel pytorch
 conda activate baysic
 conda install -c conda-forge cctbx-base
-pip install --upgrade numpy pandas seaborn chgnet mp_api rich pyrallis scipy pyxtal monty tqdm pyro-ppl toml rho-plus
+pip install --upgrade pandas seaborn chgnet mp_api rich pyrallis scipy pyxtal monty tqdm pyro-ppl toml rho-plus lightning umap-learn xenonpy numpy==1.25
 pip install --editable .
 ```
 
