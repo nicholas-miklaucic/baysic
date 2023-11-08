@@ -6,6 +6,8 @@ from tqdm.contrib.concurrent import process_map
 import pandas as pd
 import numpy as np
 import pathlib
+import logging
+import gc
 
 def process(num, redo=False):
     path = (pathlib.Path('logs') / f'{num}.feather')
@@ -13,6 +15,11 @@ def process(num, redo=False):
         print(f'Already did {num}, skipping')
         return pd.read_feather(path)
     dfs = []
+
+    if not pathlib.Path(f'logs/{num}.zip').exists():
+        print(f'{num} not present, skipping')
+        return None
+
     with ZipFile(f'logs/{num}.zip', 'r') as logs:
         base_path = Path(logs, f'work/miklaucn/logs/{num}/')
         print(len(logs.filelist))
@@ -40,7 +47,12 @@ def process(num, redo=False):
                 print(e)
                 continue
 
-    df = pd.concat(dfs)
+    try:
+        df = pd.concat(dfs)
+    except ValueError:
+        logging.warn(f'{num}.zip had no structures')
+        return None
+
     df = df.reset_index(names='comp_ind')
     df['group_num'] = pd.Categorical(df['group_num'], ordered=True)
     df['group_symbol'] = to_pretty_name(df['group_num'])
@@ -52,14 +64,15 @@ def process(num, redo=False):
         df[cat_col] = pd.Categorical(df[cat_col])
 
     df.to_feather(path)
-    return df
+    gc.collect()
+    return None
 
 def main(nums):
     return process_map(process, nums, max_workers=8)
 
 if __name__ == '__main__':
-    nums = list(range(81, 101))
-    dfs = main(nums)
-    df = pd.concat(dfs)
-    df = df.reset_index(drop=True)
-    df.to_feather(f'logs/81-100.feather')
+    nums = [97] + list(range(99, 250))
+    main(nums)
+    # df = pd.concat(dfs)
+    # df = df.reset_index(drop=True)
+    # df.to_feather(f'logs/81-100.feather')

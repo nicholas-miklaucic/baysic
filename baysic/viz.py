@@ -16,7 +16,7 @@ def ridge_plot(
 ):
     if order_by is not None:
         order = df[[group_var, num_var]].groupby(group_var, observed=True).agg(order_by)[num_var].sort_values().index
-        palette = 'rho_solara'
+        palette = 'rho_frutta'
 
     else:
         order = pd.unique(df[group_var])

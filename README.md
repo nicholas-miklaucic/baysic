@@ -25,7 +25,7 @@ pip install --editable .
 
 The `--editable` in the last command means changes in the source code will work properly. Annoyingly, however, it makes imports incredibly slow, which can be aggravating if you're running small scripts and don't want several seconds of latency before the program is responsive. In these cases, consider doing `pip install .`, which freezes the package, running whatever short scripts you're interested in, and then later running `pip install --editable .` if you continue to make edits to the source code.
 
-To test things are working, run `pyt`
+To test things are working, run `python baysic/group_search.py --help`. 
 
 ## Execution
 Run `python baysic/group_search.py` with suitable command-line options.

@@ -17,11 +17,11 @@ from pathlib import Path
 from spglib import get_spacegroup_type
 
 full_symbols = pd.Series([get_spacegroup_type(Group(g).hall_number)['international_short'] for g in range(1, 231)], name='group_symbol', index=range(1, 231))
+full_symbols = full_symbols.str.replace(r'_(\d)', lambda m: chr(int(f'208{m.groups()[0]}', base=16)), regex=True)
+full_symbols = full_symbols.str.replace(r'-(\d)', '\\1\u0305', regex=True)
 
 def to_pretty_name(g_nums):
     g = full_symbols.loc[g_nums]
-    g = g.str.replace(r'_(\d)', lambda m: chr(int(f'208{m.groups()[0]}', base=16)), regex=True)
-    g = g.str.replace(r'-(\d)', '\\1\u0305', regex=True)
     return g.values
 
 def to_sorted_pretty_string(comp):
@@ -199,6 +199,10 @@ def load_mp20(split: typing.Literal['test', 'train', 'valid'],
         df['sg'] = df['sg_number'].apply(get_group)
 
     return df
+
+def to_np(x: torch.Tensor) -> np.array:
+    """Converts to numpy."""
+    return x.detach().cpu().numpy()
 
 
 if __name__ == '__main__':
